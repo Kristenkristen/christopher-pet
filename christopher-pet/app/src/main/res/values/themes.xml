@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.ChristopherPet" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">#6644aa</item>
-        <item name="colorPrimaryVariant">#4422aa</item>
-        <item name="colorOnPrimary">#ffffff</item>
-        <item name="android:statusBarColor">#1a1a2e</item>
-    </style>
-</resources>
