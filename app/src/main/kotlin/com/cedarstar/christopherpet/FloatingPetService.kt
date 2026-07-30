@@ -25,7 +25,7 @@ class FloatingPetService : Service() {
         var isRunning = false
         private const val NOTIF_CHANNEL_ID = "christopher_pet"
         private const val NOTIF_ID = 1
-        private const val PET_SIZE_DP = 100
+        private const val PET_SIZE_DP = 140
     }
 
     private lateinit var windowManager: WindowManager
