@@ -70,11 +70,19 @@ class StatePoller(
         }.start()
     }
 
+    fun resetToIdle() {
+        currentState = PetState.IDLE
+    }
+
     private fun fetchState() {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         if (audioManager.isMusicActive) {
             updateState(PetState.HEADPHONES)
             return
+        }
+        // Music just stopped — force a state change by resetting HEADPHONES
+        if (currentState == PetState.HEADPHONES) {
+            currentState = PetState.IDLE
         }
 
         Thread {
@@ -83,10 +91,14 @@ class StatePoller(
                 val response = client.newCall(request).execute()
                 val body = response.body?.string() ?: return@Thread
                 val json = JSONObject(body)
+                if (!json.optBoolean("ok", true)) return@Thread
                 val stateStr = json.getString("state")
                 val newState = stateStr.toPetState()
                 handler.post { updateState(newState) }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                // API failed — go back to idle so reaction GIFs don't loop forever
+                handler.post { updateState(PetState.IDLE) }
+            }
         }.start()
     }
 
