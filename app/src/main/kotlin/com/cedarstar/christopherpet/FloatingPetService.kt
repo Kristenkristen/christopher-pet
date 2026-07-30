@@ -138,17 +138,22 @@ class FloatingPetService : Service() {
             2 -> {
                 // Double tap: jump reaction
                 loadGif(PetState.REACT_JUMP)
-                floatView.postDelayed({ resumePolling() }, 2000)
+                floatView.postDelayed({
+                    statePoller.resetToIdle()
+                    resumePolling()
+                }, 2000)
             }
             3 -> {
                 // Triple tap: "thinking of you" signal ♡
                 tapCount = 0
                 loadGif(PetState.BUBBLE)
                 statePoller.sendThinkingOfYou { success ->
-                    // Show happy if sent, keep bubble either way then resume
                     floatView.postDelayed({
                         if (success) loadGif(PetState.HAPPY)
-                        floatView.postDelayed({ resumePolling() }, 2500)
+                        floatView.postDelayed({
+                            statePoller.resetToIdle()
+                            resumePolling()
+                        }, 2500)
                     }, 1500)
                 }
             }
@@ -156,7 +161,10 @@ class FloatingPetService : Service() {
                 // 5 taps: annoyed
                 tapCount = 0
                 loadGif(PetState.REACT_ANNOYED)
-                floatView.postDelayed({ resumePolling() }, 2000)
+                floatView.postDelayed({
+                    statePoller.resetToIdle()
+                    resumePolling()
+                }, 2000)
             }
         }
     }
