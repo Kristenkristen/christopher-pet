@@ -12,6 +12,10 @@ enum class PetState(val gifName: String) {
     NOTIFICATION("clawd-notification"),
     ERROR("clawd-error"),
     CARRYING("clawd-carrying"),
+    SWEEPING("clawd-sweeping"),
+    CONDUCTING("clawd-conducting"),
+    DEBUGGER("clawd-debugger"),
+    JUGGLING("clawd-juggling"),
     REACT_ANNOYED("clawd-react-annoyed"),
     REACT_JUMP("clawd-react-double-jump"),
     BUBBLE("clawd-bubble");
@@ -21,14 +25,18 @@ enum class PetState(val gifName: String) {
 
 fun String.toPetState(): PetState = when (this) {
     "idle-reading" -> PetState.IDLE_READING
-    "thinking" -> PetState.THINKING
-    "typing" -> PetState.TYPING
-    "sleeping" -> PetState.SLEEPING
-    "happy" -> PetState.HAPPY
+    "thinking"     -> PetState.THINKING
+    "typing"       -> PetState.TYPING
+    "sleeping"     -> PetState.SLEEPING
+    "happy"        -> PetState.HAPPY
     "headphones-groove" -> PetState.HEADPHONES
-    "building" -> PetState.BUILDING
+    "building"     -> PetState.BUILDING
     "notification" -> PetState.NOTIFICATION
-    "error" -> PetState.ERROR
-    "carrying" -> PetState.CARRYING
-    else -> PetState.IDLE
+    "error"        -> PetState.ERROR
+    "carrying"     -> PetState.CARRYING
+    "sweeping"     -> PetState.SWEEPING
+    "conducting"   -> PetState.CONDUCTING
+    "debugger"     -> PetState.DEBUGGER
+    "juggling"     -> PetState.JUGGLING
+    else           -> PetState.IDLE
 }
