@@ -73,6 +73,8 @@ class FloatingPetService : Service() {
     private var initialY = 0
     private var initialTouchX = 0f
     private var initialTouchY = 0f
+    private var downLocalX = 0f    // view-local X at ACTION_DOWN, for hit-area check
+    private var downLocalY = 0f    // view-local Y at ACTION_DOWN, for hit-area check
     private var velocityTracker: VelocityTracker? = null
     private var lastTapTime = 0L
     private var tapCount = 0
@@ -276,6 +278,7 @@ class FloatingPetService : Service() {
                     mainHandler.removeCallbacks(walkRunnable)
                     initialX = params!!.x; initialY = params!!.y
                     initialTouchX = event.rawX; initialTouchY = event.rawY
+                    downLocalX = event.x; downLocalY = event.y
                     velocityTracker?.clear()
                     velocityTracker = VelocityTracker.obtain()
                     velocityTracker?.addMovement(event)
@@ -305,7 +308,7 @@ class FloatingPetService : Service() {
                     val dy = Math.abs(event.rawY - initialTouchY)
                     val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
 
-                    if (dx < 30 && dy < 30) {
+                    if (dx < 30 && dy < 30 && isTouchInHitArea(downLocalX, downLocalY)) {
                         handleTap()
                         scheduleNextWalk()
                     } else if (speed >= FLING_MIN_VELOCITY) {
@@ -469,6 +472,15 @@ class FloatingPetService : Service() {
                 statePoller.sendThinkingOfYou { _ -> }
             }
         }
+    }
+
+    // Tap hitbox is the inner 70% of the pet view — visual size unchanged
+    private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
+        val density = resources.displayMetrics.density
+        val petPx = PET_SIZE_DP * density
+        val inset = 20 * density  // 20dp inset on each side → 100dp×100dp hit area inside 140dp pet
+        return localX >= inset && localX <= petPx - inset &&
+               localY >= inset && localY <= petPx - inset
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
