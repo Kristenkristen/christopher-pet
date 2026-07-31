@@ -12,12 +12,17 @@ import android.os.Looper
 
 class AppStateMonitor(
     private val context: Context,
-    private val onPhoneStateChanged: (PetState?) -> Unit
+    private val onMusicStateChanged: (PetState?) -> Unit,   // Layer 3: 网易云 headphones
+    private val onPhoneStateChanged: (PetState?) -> Unit    // Layer 4: shopping/charging/battery
 ) {
     companion object {
         private const val LOW_BATTERY_THRESHOLD = 19
         private const val APP_POLL_INTERVAL_MS = 5000L
         private const val NETEASE_PACKAGE = "com.netease.cloudmusic"
+        // 网易云 lives in background for hours — use 30-minute window to detect it
+        private const val MUSIC_WINDOW_MS = 30 * 60 * 1000L
+        // Shopping apps: only relevant if actively in foreground (60s window)
+        private const val PHONE_WINDOW_MS = 60_000L
 
         private val SHOPPING_PACKAGES = setOf(
             "com.taobao.taobao",
@@ -27,6 +32,7 @@ class AppStateMonitor(
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private var currentMusicState: PetState? = null
     private var currentPhoneState: PetState? = null
     private var isCharging = false
     private var batteryLevel = 100
@@ -64,40 +70,46 @@ class AppStateMonitor(
         try { context.unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
     }
 
-    // Run the heavy foreground-app query on a background thread to avoid main-thread jank
     private fun schedulePhoneStateUpdate() {
         val charging = isCharging
         val batt = batteryLevel
         Thread {
-            val newState: PetState? = when {
+            // Layer 3: music — isMusicActive is the primary signal; package check uses wide window
+            // since 网易云 stays in background indefinitely while playing
+            val musicActive = isMusicActive()
+            val newMusicState: PetState? = if (musicActive) {
+                val pkg = getForegroundPackage(MUSIC_WINDOW_MS)
+                if (pkg == NETEASE_PACKAGE) PetState.HEADPHONES else null
+            } else null
+
+            // Layer 4: phone hardware / shopping — short window (only if actively foregrounded)
+            val newPhoneState: PetState? = when {
                 charging -> PetState.BUILDING_BOXES
                 batt <= LOW_BATTERY_THRESHOLD -> PetState.IDLE_LOW_BATTERY
                 else -> {
-                    val fg = getForegroundPackage()
-                    val musicActive = isMusicActive()
-                    when {
-                        // Headphones: only when 网易云 is active AND music is actually playing
-                        fg == NETEASE_PACKAGE && musicActive -> PetState.HEADPHONES
-                        fg != null && fg in SHOPPING_PACKAGES -> PetState.TYPING_BOSS
-                        else -> null
-                    }
+                    val fg = getForegroundPackage(PHONE_WINDOW_MS)
+                    if (fg != null && fg in SHOPPING_PACKAGES) PetState.TYPING_BOSS else null
                 }
             }
+
             handler.post {
-                if (newState != currentPhoneState) {
-                    currentPhoneState = newState
-                    onPhoneStateChanged(newState)
+                if (newMusicState != currentMusicState) {
+                    currentMusicState = newMusicState
+                    onMusicStateChanged(newMusicState)
+                }
+                if (newPhoneState != currentPhoneState) {
+                    currentPhoneState = newPhoneState
+                    onPhoneStateChanged(newPhoneState)
                 }
             }
         }.start()
     }
 
-    private fun getForegroundPackage(): String? {
+    private fun getForegroundPackage(windowMs: Long): String? {
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            // Use 60-second window so apps that have been in foreground for a while still register
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 60_000, now)
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - windowMs, now)
             stats?.maxByOrNull { it.lastTimeUsed }?.packageName
         } catch (_: Exception) { null }
     }
