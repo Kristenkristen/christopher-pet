@@ -376,50 +376,28 @@ class FloatingPetService : Service() {
         val returnX = (margin..maxX).random()
         val returnY = ((80 * dm.density).toInt()..(220 * dm.density).toInt()).random()
 
-        // Block applyDisplayState during scripted return animation (same as walking)
         isWalking = true
-
-        if (Math.random() < 0.3) {
-            // 30% chance: fast marble bounce + dizzy
-            val startX = params!!.x; val startY = params!!.y
-            loadGif(PetState.DIZZY)
-            val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
-            bounceAnim.duration = 350
-            bounceAnim.addUpdateListener { va ->
-                val t = va.animatedFraction
-                params!!.x = (startX + (returnX - startX) * t).toInt()
-                params!!.y = (startY + (returnY - startY) * t).toInt()
-                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-            }
-            bounceAnim.addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator) {
-                    isWalking = false
-                    setGesture(PetState.DIZZY, 2000)
-                    mainHandler.postDelayed({ statePoller.start() }, 2200)
-                }
-            })
-            bounceAnim.start()
-        } else {
-            // 70% chance: crawl back with crabwalk
-            loadGif(PetState.CRABWALK)
-            val startX = params!!.x; val startY = params!!.y
-            val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
-            crawlAnim.duration = 1800
-            crawlAnim.addUpdateListener { va ->
-                val t = va.animatedFraction
-                params!!.x = (startX + (returnX - startX) * t).toInt()
-                params!!.y = (startY + (returnY - startY) * t).toInt()
-                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-            }
-            crawlAnim.addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator) {
-                    isWalking = false
-                    statePoller.start()
-                    applyDisplayState()
-                }
-            })
-            crawlAnim.start()
+        loadGif(PetState.CRABWALK)
+        val startX = params!!.x; val startY = params!!.y
+        val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
+        crawlAnim.duration = 1800
+        crawlAnim.addUpdateListener { va ->
+            val t = va.animatedFraction
+            params!!.x = (startX + (returnX - startX) * t).toInt()
+            params!!.y = (startY + (returnY - startY) * t).toInt()
+            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
         }
+        crawlAnim.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                isWalking = false
+                statePoller.start()
+                applyDisplayState()
+                // Schedule next walk after fling cooldown (scheduleNextWalk would no-op during cooldown)
+                val remaining = maxOf(0L, flingCooldownUntil - System.currentTimeMillis())
+                mainHandler.postDelayed(walkRunnable, remaining + (45_000L..120_000L).random())
+            }
+        })
+        crawlAnim.start()
     }
 
     // ── Tap Gestures ──────────────────────────────────────────────────────────
@@ -459,7 +437,7 @@ class FloatingPetService : Service() {
                     "curiosity", "social" ->
                         listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
                     else ->
-                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND).random()
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
                 }
                 setGesture(pick, 2500)
             }
