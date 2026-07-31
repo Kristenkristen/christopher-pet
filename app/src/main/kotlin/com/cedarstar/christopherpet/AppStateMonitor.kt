@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioManager
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
@@ -16,8 +17,8 @@ class AppStateMonitor(
     companion object {
         private const val LOW_BATTERY_THRESHOLD = 19
         private const val APP_POLL_INTERVAL_MS = 5000L
+        private const val NETEASE_PACKAGE = "com.netease.cloudmusic"
 
-        private val MUSIC_PACKAGES = setOf("com.netease.cloudmusic")
         private val SHOPPING_PACKAGES = setOf(
             "com.taobao.taobao",
             "com.sankuai.meituan",
@@ -39,14 +40,14 @@ class AppStateMonitor(
             val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
             if (level >= 0 && scale > 0) batteryLevel = (level * 100 / scale)
-            updatePhoneState()
+            schedulePhoneStateUpdate()
         }
     }
 
     private val appPollRunnable = object : Runnable {
         override fun run() {
             if (!running) return
-            updatePhoneState()
+            schedulePhoneStateUpdate()
             handler.postDelayed(this, APP_POLL_INTERVAL_MS)
         }
     }
@@ -63,6 +64,34 @@ class AppStateMonitor(
         try { context.unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
     }
 
+    // Run the heavy foreground-app query on a background thread to avoid main-thread jank
+    private fun schedulePhoneStateUpdate() {
+        val charging = isCharging
+        val batt = batteryLevel
+        Thread {
+            val newState: PetState? = when {
+                charging -> PetState.BUILDING_BOXES
+                batt <= LOW_BATTERY_THRESHOLD -> PetState.IDLE_LOW_BATTERY
+                else -> {
+                    val fg = getForegroundPackage()
+                    val musicActive = isMusicActive()
+                    when {
+                        // Headphones: only when 网易云 is active AND music is actually playing
+                        fg == NETEASE_PACKAGE && musicActive -> PetState.HEADPHONES
+                        fg != null && fg in SHOPPING_PACKAGES -> PetState.TYPING_BOSS
+                        else -> null
+                    }
+                }
+            }
+            handler.post {
+                if (newState != currentPhoneState) {
+                    currentPhoneState = newState
+                    onPhoneStateChanged(newState)
+                }
+            }
+        }.start()
+    }
+
     private fun getForegroundPackage(): String? {
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -72,22 +101,10 @@ class AppStateMonitor(
         } catch (_: Exception) { null }
     }
 
-    private fun updatePhoneState() {
-        val newState: PetState? = when {
-            isCharging -> PetState.BUILDING_BOXES
-            batteryLevel <= LOW_BATTERY_THRESHOLD -> PetState.IDLE_LOW_BATTERY
-            else -> {
-                val fg = getForegroundPackage()
-                when {
-                    fg != null && fg in SHOPPING_PACKAGES -> PetState.TYPING_BOSS
-                    else -> null
-                }
-            }
-        }
-
-        if (newState != currentPhoneState) {
-            currentPhoneState = newState
-            handler.post { onPhoneStateChanged(newState) }
-        }
+    private fun isMusicActive(): Boolean {
+        return try {
+            val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audio.isMusicActive
+        } catch (_: Exception) { false }
     }
 }
