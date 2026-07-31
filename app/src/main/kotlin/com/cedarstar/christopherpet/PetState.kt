@@ -16,6 +16,7 @@ enum class PetState(val gifName: String) {
     CONDUCTING("clawd-conducting"),
     DEBUGGER("clawd-debugger"),
     JUGGLING("clawd-juggling"),
+    CRABWALK("clawd-mini-crabwalk"),
     REACT_ANNOYED("clawd-react-annoyed"),
     REACT_JUMP("clawd-react-double-jump"),
     BUBBLE("clawd-bubble");
