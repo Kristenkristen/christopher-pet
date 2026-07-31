@@ -11,19 +11,19 @@ enum class PetState(val gifName: String) {
     IDLE_YAWN("clawd-idle"),                 // SVG bad → use idle
     IDLE_LOW_BATTERY("clawd-sleeping"),      // SVG bad → use sleeping
 
-    // Activity / working
-    THINKING("clawd-working-thinking"),
-    TYPING("clawd-working-typing"),
-    TYPING_BOSS("clawd-typing"),             // SVG bad → use regular typing
-    SWEEPING("clawd-working-sweeping"),
-    CONDUCTING("clawd-working-conducting"),
-    DEBUGGER("clawd-working-debugger"),
-    JUGGLING("clawd-working-juggling"),
-    BUILDING("clawd-working-building"),
-    BUILDING_BOXES("clawd-working-building-boxes"),  // good (copy of building)
-    CARRYING("clawd-working-carrying"),
-    ULTRATHINK("clawd-thinking"),            // SVG bad → use thinking
-    WIZARD("clawd-thinking"),               // SVG bad → use thinking
+    // Activity / working — actual asset filenames omit "working-" prefix
+    THINKING("clawd-thinking"),
+    TYPING("clawd-typing"),
+    TYPING_BOSS("clawd-typing"),
+    SWEEPING("clawd-sweeping"),
+    CONDUCTING("clawd-conducting"),
+    DEBUGGER("clawd-debugger"),
+    JUGGLING("clawd-juggling"),
+    BUILDING("clawd-building"),
+    BUILDING_BOXES("clawd-working-building-boxes"),  // this one keeps the prefix
+    CARRYING("clawd-carrying"),
+    ULTRATHINK("clawd-thinking"),
+    WIZARD("clawd-thinking"),
 
     // Status
     SLEEPING("clawd-sleeping"),
