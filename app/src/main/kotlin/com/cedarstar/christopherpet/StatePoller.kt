@@ -1,7 +1,6 @@
 package com.cedarstar.christopherpet
 
 import android.content.Context
-import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import okhttp3.MediaType.Companion.toMediaType
@@ -54,6 +53,7 @@ class StatePoller(
     fun start() { running = true; handler.post(pollRunnable) }
     fun stop()  { running = false; handler.removeCallbacks(pollRunnable) }
 
+    // Sends [nudge:她在想你] to Christopher
     fun sendThinkingOfYou(onResult: (Boolean) -> Unit) {
         Thread {
             try {
@@ -78,19 +78,8 @@ class StatePoller(
     }
 
     private fun fetchState() {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (audioManager.isMusicActive) {
-            val resp = ServerResponse(
-                state = PetState.HEADPHONES,
-                activityState = null,
-                fatigue = 0f,
-                topDrive = "attachment",
-                bubble = "",
-            )
-            handler.post { onResponse(resp) }
-            return
-        }
-
+        // Music/headphones detection is now handled by AppStateMonitor (Layer 3)
+        // so we always fetch from server here without early-returning on isMusicActive
         Thread {
             try {
                 val req = Request.Builder().url("$BASE_URL/pet_state.php").build()
