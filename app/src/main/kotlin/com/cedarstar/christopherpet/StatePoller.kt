@@ -14,14 +14,14 @@ import java.util.concurrent.TimeUnit
 
 class StatePoller(
     private val context: Context,
-    private val onStateChanged: (PetState) -> Unit
+    private val onStateChanged: (PetState) -> Unit,
+    private val onBubble: ((String) -> Unit)? = null
 ) {
     companion object {
         private const val BASE_URL = "https://christopherkristen.xyz/api"
         private const val POLL_INTERVAL_MS = 8000L
         private val PET_TOKEN: String by lazy {
-            val input = "christopherkristen_thinking"
-            val md5 = MessageDigest.getInstance("MD5").digest(input.toByteArray())
+            val md5 = MessageDigest.getInstance("MD5").digest("christopherkristen_thinking".toByteArray())
             "ck_pet_" + md5.joinToString("") { "%02x".format(it) }
         }
     }
@@ -33,6 +33,7 @@ class StatePoller(
 
     private val handler = Handler(Looper.getMainLooper())
     private var currentState = PetState.IDLE
+    private var lastBubble = ""
     private var running = false
 
     private val pollRunnable = object : Runnable {
@@ -43,26 +44,17 @@ class StatePoller(
         }
     }
 
-    fun start() {
-        running = true
-        handler.post(pollRunnable)
-    }
+    fun start() { running = true; handler.post(pollRunnable) }
+    fun stop()  { running = false; handler.removeCallbacks(pollRunnable) }
 
-    fun stop() {
-        running = false
-        handler.removeCallbacks(pollRunnable)
-    }
+    fun resetToIdle() { currentState = PetState.IDLE }
 
     fun sendThinkingOfYou(onResult: (Boolean) -> Unit) {
         Thread {
             try {
                 val body = "token=$PET_TOKEN".toRequestBody("application/x-www-form-urlencoded".toMediaType())
-                val request = Request.Builder()
-                    .url("$BASE_URL/thinking.php")
-                    .post(body)
-                    .build()
-                val response = client.newCall(request).execute()
-                val ok = response.isSuccessful
+                val req = Request.Builder().url("$BASE_URL/thinking.php").post(body).build()
+                val ok = client.newCall(req).execute().isSuccessful
                 handler.post { onResult(ok) }
             } catch (_: Exception) {
                 handler.post { onResult(false) }
@@ -70,33 +62,28 @@ class StatePoller(
         }.start()
     }
 
-    fun resetToIdle() {
-        currentState = PetState.IDLE
-    }
-
     private fun fetchState() {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (audioManager.isMusicActive) {
-            updateState(PetState.HEADPHONES)
-            return
-        }
-        // Music just stopped — force a state change by resetting HEADPHONES
-        if (currentState == PetState.HEADPHONES) {
-            currentState = PetState.IDLE
-        }
+        if (audioManager.isMusicActive) { updateState(PetState.HEADPHONES); return }
+        if (currentState == PetState.HEADPHONES) currentState = PetState.IDLE
 
         Thread {
             try {
-                val request = Request.Builder().url("$BASE_URL/pet_state.php").build()
-                val response = client.newCall(request).execute()
-                val body = response.body?.string() ?: return@Thread
+                val req = Request.Builder().url("$BASE_URL/pet_state.php").build()
+                val body = client.newCall(req).execute().body?.string() ?: return@Thread
                 val json = JSONObject(body)
                 if (!json.optBoolean("ok", true)) return@Thread
-                val stateStr = json.getString("state")
-                val newState = stateStr.toPetState()
-                handler.post { updateState(newState) }
+                val newState = json.getString("state").toPetState()
+                // Bubble text (optional field)
+                val bubble = json.optString("bubble", "")
+                handler.post {
+                    updateState(newState)
+                    if (bubble.isNotBlank() && bubble != lastBubble) {
+                        lastBubble = bubble
+                        onBubble?.invoke(bubble)
+                    }
+                }
             } catch (_: Exception) {
-                // API failed — go back to idle so reaction GIFs don't loop forever
                 handler.post { updateState(PetState.IDLE) }
             }
         }.start()
