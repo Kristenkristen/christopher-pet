@@ -96,7 +96,8 @@ class AppStateMonitor(
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 5000, now)
+            // Use 60-second window so apps that have been in foreground for a while still register
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 60_000, now)
             stats?.maxByOrNull { it.lastTimeUsed }?.packageName
         } catch (_: Exception) { null }
     }
