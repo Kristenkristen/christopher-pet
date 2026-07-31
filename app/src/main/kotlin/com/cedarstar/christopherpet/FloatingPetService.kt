@@ -14,7 +14,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.view.GestureDetector
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -66,6 +65,9 @@ class FloatingPetService : Service() {
     private var currentFatigue = 0f
     private var lastTopDrive = "boredom"
 
+    // ── GIF cache (avoid redundant reloads) ──────────────────────────────────
+    private var currentGifState: PetState? = null
+
     // ── Touch state ──────────────────────────────────────────────────────────
     private var initialX = 0
     private var initialY = 0
@@ -80,9 +82,17 @@ class FloatingPetService : Service() {
     private var flingCooldownUntil = 0L
     private val flingTimestamps = mutableListOf<Long>()
 
-    // ── Gesture runnable IDs ─────────────────────────────────────────────────
+    // ── Runnables ────────────────────────────────────────────────────────────
     private val bubbleHideRunnable = Runnable { hideBubble() }
     private val gestureResetRunnable = Runnable { clearGesture() }
+
+    // Single tap-resolution runnable — cancelled and rescheduled on each tap
+    // so only the LAST tap in a quick sequence triggers resolveTap
+    private val tapResolutionRunnable = Runnable {
+        resolveTap(tapCount)
+        tapCount = 0
+    }
+
     private val idleAnimRunnable = object : Runnable {
         override fun run() {
             triggerIdleRandom()
@@ -147,8 +157,9 @@ class FloatingPetService : Service() {
 
         params = WindowManager.LayoutParams(
             petPx, totalH, type,
+            // FLAG_LAYOUT_NO_LIMITS lets the pet fly off-screen during flings
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
@@ -191,11 +202,9 @@ class FloatingPetService : Service() {
         }
         if (fatigueState != oldFatigueState) applyDisplayState()
 
-        // Schedule occasional yawn when approaching fatigue but not yet sleeping
         mainHandler.removeCallbacks(yawnRunnable)
         if (currentFatigue >= FATIGUE_YAWN && fatigueState == null) {
-            val delay = (30_000L..90_000L).random()
-            mainHandler.postDelayed(yawnRunnable, delay)
+            mainHandler.postDelayed(yawnRunnable, (30_000L..90_000L).random())
         }
     }
 
@@ -277,6 +286,7 @@ class FloatingPetService : Service() {
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                        // END gravity: rightward drag decreases x (distance from right edge)
                         params!!.x = initialX - dx
                         params!!.y = initialY + dy
                         try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
@@ -286,7 +296,8 @@ class FloatingPetService : Service() {
                 MotionEvent.ACTION_UP -> {
                     velocityTracker?.addMovement(event)
                     velocityTracker?.computeCurrentVelocity(1000)
-                    val vx = -(velocityTracker?.xVelocity ?: 0f)  // flip: right drag = negative screen x
+                    // END gravity: negate xVelocity so positive = moving toward right edge (smaller x)
+                    val vx = -(velocityTracker?.xVelocity ?: 0f)
                     val vy = velocityTracker?.yVelocity ?: 0f
                     velocityTracker?.recycle(); velocityTracker = null
 
@@ -294,12 +305,11 @@ class FloatingPetService : Service() {
                     val dy = Math.abs(event.rawY - initialTouchY)
                     val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
 
-                    if (dx < 10 && dy < 10) {
+                    if (dx < 30 && dy < 30) {
                         handleTap()
                         scheduleNextWalk()
                     } else if (speed >= FLING_MIN_VELOCITY) {
                         handleFling(vx, vy)
-                        // flingCooldownUntil set inside handleFling, no scheduleNextWalk
                     } else {
                         scheduleNextWalk()
                     }
@@ -311,11 +321,10 @@ class FloatingPetService : Service() {
     }
 
     private fun handleFling(vx: Float, vy: Float) {
-        // Set walk cooldown
         flingCooldownUntil = System.currentTimeMillis() + FLING_COOLDOWN_MS
         mainHandler.removeCallbacks(walkRunnable)
 
-        // Track fling for 3-in-1-min signal
+        // Track 3-flings-in-1-min signal
         val now = System.currentTimeMillis()
         flingTimestamps.removeAll { now - it > FLING_SIGNAL_WINDOW_MS }
         flingTimestamps.add(now)
@@ -324,24 +333,22 @@ class FloatingPetService : Service() {
             statePoller.sendFlingSignal()
         }
 
-        // Animate off screen
+        // Fly off screen in fling direction
         val dm = resources.displayMetrics
-        val petPx = (PET_SIZE_DP * dm.density).toInt()
         val startX = params!!.x
         val startY = params!!.y
-
-        // Target: fly off screen in fling direction
-        val distance = 1500f
         val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
         val normVx = vx / speed
         val normVy = vy / speed
-        val targetX = (startX + normVx * distance).toInt()
-        val targetY = (startY + normVy * distance).toInt()
+
+        // Move 1.5× screen width in fling direction to guarantee off-screen
+        val dist = dm.widthPixels * 1.5f
+        val targetX = (startX + normVx * dist).toInt()
+        val targetY = (startY + normVy * dist).toInt()
 
         statePoller.stop()
-        val flyOutDuration = (250L..400L).random()
         val flyAnim = ValueAnimator.ofFloat(0f, 1f)
-        flyAnim.duration = flyOutDuration
+        flyAnim.duration = 300
         flyAnim.addUpdateListener { va ->
             val t = va.animatedFraction
             params!!.x = (startX + (targetX - startX) * t).toInt()
@@ -350,6 +357,7 @@ class FloatingPetService : Service() {
         }
         flyAnim.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
+                // Brief pause off-screen, then bounce or crawl back
                 mainHandler.postDelayed({ bounceOrCrawlBack() }, 300)
             }
         })
@@ -357,13 +365,19 @@ class FloatingPetService : Service() {
     }
 
     private fun bounceOrCrawlBack() {
-        val returnX = 30
-        val returnY = 200
+        val dm = resources.displayMetrics
+        val petPx = (PET_SIZE_DP * dm.density).toInt()
+        val margin = (16 * dm.density).toInt()
+        val maxX = dm.widthPixels - petPx - margin
+        val returnX = (margin..maxX).random()
+        val returnY = ((80 * dm.density).toInt()..(220 * dm.density).toInt()).random()
+
         if (Math.random() < 0.5) {
-            // Bounce back fast + dizzy
+            // Fast marble bounce + dizzy
             val startX = params!!.x; val startY = params!!.y
+            loadGif(PetState.DIZZY)
             val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
-            bounceAnim.duration = 400
+            bounceAnim.duration = 350
             bounceAnim.addUpdateListener { va ->
                 val t = va.animatedFraction
                 params!!.x = (startX + (returnX - startX) * t).toInt()
@@ -376,10 +390,9 @@ class FloatingPetService : Service() {
                     mainHandler.postDelayed({ statePoller.start() }, 2200)
                 }
             })
-            loadGif(PetState.DIZZY)
             bounceAnim.start()
         } else {
-            // Crawl back with crabwalk
+            // Crawl back from edge with crabwalk
             loadGif(PetState.CRABWALK)
             val startX = params!!.x; val startY = params!!.y
             val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -415,16 +428,18 @@ class FloatingPetService : Service() {
         if (now - lastTapTime < 500) tapCount++ else tapCount = 1
         lastTapTime = now
 
-        mainHandler.postDelayed({ resolveTap(tapCount) }, 400)
+        // Cancel any pending tap resolution and reschedule — only the LAST tap fires
+        mainHandler.removeCallbacks(tapResolutionRunnable)
+        mainHandler.postDelayed(tapResolutionRunnable, 400)
     }
 
     private fun resolveTap(count: Int) {
         when (count) {
             1 -> {
                 val options = listOf(
-                    PetState.IDLE_LOOK, PetState.IDLE_LOOK,
                     PetState.REACT_ANNOYED, PetState.REACT_DOUBLE_JUMP,
-                    PetState.REACT_LEFT, PetState.REACT_RIGHT
+                    PetState.REACT_LEFT, PetState.REACT_RIGHT,
+                    PetState.IDLE_LOOK, PetState.HAPPY
                 )
                 setGesture(options.random(), 2500)
             }
@@ -435,22 +450,23 @@ class FloatingPetService : Service() {
                     "curiosity", "social" ->
                         listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
                     else ->
-                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.IDLE_DOZE).random()
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND).random()
                 }
                 setGesture(pick, 2500)
             }
             3 -> {
-                tapCount = 0
+                // Random annoyance (swapped from old 5-tap)
+                val options = listOf(
+                    PetState.REACT_DOUBLE, PetState.DIZZY,
+                    PetState.ERROR, PetState.REACT_ANNOYED
+                )
+                setGesture(options.random(), 2000)
+            }
+            5 -> {
+                // 想你 signal — sends [nudge:她在想你] to Christopher
                 val pick = if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY
                 setGesture(pick, 2000)
                 statePoller.sendThinkingOfYou { _ -> }
-            }
-            5 -> {
-                tapCount = 0
-                val options = listOf(
-                    PetState.REACT_DOUBLE, PetState.DIZZY, PetState.ERROR
-                )
-                setGesture(options.random(), 2000)
             }
         }
     }
@@ -458,13 +474,18 @@ class FloatingPetService : Service() {
     // ── GIF Loading ───────────────────────────────────────────────────────────
 
     fun loadGif(state: PetState) {
+        if (state == currentGifState) return
         try {
             val gifDrawable = GifDrawable(assets, state.gifAssetPath())
             gifView.setImageDrawable(gifDrawable)
+            currentGifState = state
         } catch (_: Exception) {
-            try {
-                gifView.setImageDrawable(GifDrawable(assets, PetState.IDLE.gifAssetPath()))
-            } catch (_: Exception) {}
+            if (state != PetState.IDLE) {
+                try {
+                    gifView.setImageDrawable(GifDrawable(assets, PetState.IDLE.gifAssetPath()))
+                    currentGifState = PetState.IDLE
+                } catch (_: Exception) {}
+            }
         }
     }
 
@@ -473,7 +494,6 @@ class FloatingPetService : Service() {
     private fun setupStatePoller() {
         statePoller = StatePoller(this,
             onResponse = { resp ->
-                // Update server data
                 serverState = resp.state
                 activityState = resp.activityState
                 currentFatigue = resp.fatigue
