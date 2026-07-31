@@ -376,8 +376,11 @@ class FloatingPetService : Service() {
         val returnX = (margin..maxX).random()
         val returnY = ((80 * dm.density).toInt()..(220 * dm.density).toInt()).random()
 
-        if (Math.random() < 0.5) {
-            // Fast marble bounce + dizzy
+        // Block applyDisplayState during scripted return animation (same as walking)
+        isWalking = true
+
+        if (Math.random() < 0.3) {
+            // 30% chance: fast marble bounce + dizzy
             val startX = params!!.x; val startY = params!!.y
             loadGif(PetState.DIZZY)
             val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -390,13 +393,14 @@ class FloatingPetService : Service() {
             }
             bounceAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
+                    isWalking = false
                     setGesture(PetState.DIZZY, 2000)
                     mainHandler.postDelayed({ statePoller.start() }, 2200)
                 }
             })
             bounceAnim.start()
         } else {
-            // Crawl back from edge with crabwalk
+            // 70% chance: crawl back with crabwalk
             loadGif(PetState.CRABWALK)
             val startX = params!!.x; val startY = params!!.y
             val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -409,6 +413,7 @@ class FloatingPetService : Service() {
             }
             crawlAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
+                    isWalking = false
                     statePoller.start()
                     applyDisplayState()
                 }
@@ -475,11 +480,11 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox is the inner 70% of the pet view — visual size unchanged
+    // Tap hitbox is the inner 50% of the pet view — visual size unchanged
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
         val petPx = PET_SIZE_DP * density
-        val inset = 20 * density  // 20dp inset on each side → 100dp×100dp hit area inside 140dp pet
+        val inset = 35 * density  // 35dp inset each side → 70dp×70dp hit area inside 140dp pet
         return localX >= inset && localX <= petPx - inset &&
                localY >= inset && localY <= petPx - inset
     }
