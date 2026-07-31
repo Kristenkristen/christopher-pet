@@ -12,14 +12,22 @@ import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
+data class ServerResponse(
+    val state: PetState,
+    val activityState: PetState?,   // Christopher's current activity (Layer 1)
+    val fatigue: Float,             // 0.0–1.0
+    val topDrive: String,           // "attachment"/"curiosity"/"social"/"libido"/"boredom"
+    val bubble: String,
+)
+
 class StatePoller(
     private val context: Context,
-    private val onStateChanged: (PetState) -> Unit,
+    private val onResponse: (ServerResponse) -> Unit,
     private val onBubble: ((String) -> Unit)? = null
 ) {
     companion object {
         private const val BASE_URL = "https://christopherkristen.xyz/api"
-        private const val POLL_INTERVAL_MS = 8000L
+        const val POLL_INTERVAL_MS = 8000L
         private val PET_TOKEN: String by lazy {
             val md5 = MessageDigest.getInstance("MD5").digest("christopherkristen_thinking".toByteArray())
             "ck_pet_" + md5.joinToString("") { "%02x".format(it) }
@@ -32,7 +40,6 @@ class StatePoller(
         .build()
 
     private val handler = Handler(Looper.getMainLooper())
-    private var currentState = PetState.IDLE
     private var lastBubble = ""
     private var running = false
 
@@ -47,8 +54,6 @@ class StatePoller(
     fun start() { running = true; handler.post(pollRunnable) }
     fun stop()  { running = false; handler.removeCallbacks(pollRunnable) }
 
-    fun resetToIdle() { currentState = PetState.IDLE }
-
     fun sendThinkingOfYou(onResult: (Boolean) -> Unit) {
         Thread {
             try {
@@ -62,37 +67,63 @@ class StatePoller(
         }.start()
     }
 
+    fun sendFlingSignal() {
+        Thread {
+            try {
+                val body = "token=$PET_TOKEN&type=fling".toRequestBody("application/x-www-form-urlencoded".toMediaType())
+                val req = Request.Builder().url("$BASE_URL/thinking.php").post(body).build()
+                client.newCall(req).execute()
+            } catch (_: Exception) {}
+        }.start()
+    }
+
     private fun fetchState() {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (audioManager.isMusicActive) { updateState(PetState.HEADPHONES); return }
-        if (currentState == PetState.HEADPHONES) currentState = PetState.IDLE
+        if (audioManager.isMusicActive) {
+            val resp = ServerResponse(
+                state = PetState.HEADPHONES,
+                activityState = null,
+                fatigue = 0f,
+                topDrive = "attachment",
+                bubble = "",
+            )
+            handler.post { onResponse(resp) }
+            return
+        }
 
         Thread {
             try {
                 val req = Request.Builder().url("$BASE_URL/pet_state.php").build()
-                val body = client.newCall(req).execute().body?.string() ?: return@Thread
-                val json = JSONObject(body)
+                val bodyStr = client.newCall(req).execute().body?.string() ?: return@Thread
+                val json = JSONObject(bodyStr)
                 if (!json.optBoolean("ok", true)) return@Thread
-                val newState = json.getString("state").toPetState()
-                // Bubble text (optional field)
+
+                val state = json.getString("state").toPetState()
+                val actStr = json.optString("activity_state", "")
+                val activity = if (actStr.isNotBlank()) actStr.toPetState() else null
+                val fatigue = json.optDouble("fatigue", 0.0).toFloat()
+                val topDrive = json.optString("top_drive", "boredom")
                 val bubble = json.optString("bubble", "")
+
+                val resp = ServerResponse(
+                    state = state,
+                    activityState = activity,
+                    fatigue = fatigue,
+                    topDrive = topDrive,
+                    bubble = bubble,
+                )
+
                 handler.post {
-                    updateState(newState)
+                    onResponse(resp)
                     if (bubble.isNotBlank() && bubble != lastBubble) {
                         lastBubble = bubble
                         onBubble?.invoke(bubble)
                     }
                 }
             } catch (_: Exception) {
-                handler.post { updateState(PetState.IDLE) }
+                val fallback = ServerResponse(PetState.IDLE, null, 0f, "boredom", "")
+                handler.post { onResponse(fallback) }
             }
         }.start()
-    }
-
-    private fun updateState(newState: PetState) {
-        if (newState != currentState) {
-            currentState = newState
-            onStateChanged(newState)
-        }
     }
 }
