@@ -1,5 +1,7 @@
 package com.cedarstar.christopherpet
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
@@ -9,21 +11,20 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.Environment
-import android.os.FileObserver
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import pl.droidsonroids.gif.GifDrawable
 import pl.droidsonroids.gif.GifImageView
-import java.io.File
 
 class FloatingPetService : Service() {
 
@@ -32,7 +33,18 @@ class FloatingPetService : Service() {
         private const val NOTIF_CHANNEL_ID = "christopher_pet"
         private const val NOTIF_ID = 1
         private const val PET_SIZE_DP = 140
-        private const val BUBBLE_HEIGHT_DP = 80  // extra space above pet for bubble
+        private const val BUBBLE_HEIGHT_DP = 80
+
+        // Fatigue thresholds
+        private const val FATIGUE_YAWN  = 0.50f
+        private const val FATIGUE_DOZE  = 0.65f
+        private const val FATIGUE_SLEEP = 0.80f
+
+        // Fling detection
+        private const val FLING_MIN_VELOCITY = 1200f
+        private const val FLING_COOLDOWN_MS  = 600_000L  // 10 min
+        private const val FLING_SIGNAL_COUNT = 3
+        private const val FLING_SIGNAL_WINDOW_MS = 60_000L
     }
 
     private lateinit var windowManager: WindowManager
@@ -40,25 +52,55 @@ class FloatingPetService : Service() {
     private lateinit var gifView: GifImageView
     private lateinit var bubbleView: TextView
     private lateinit var statePoller: StatePoller
+    private lateinit var appMonitor: AppStateMonitor
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var params: WindowManager.LayoutParams? = null
+
+    // ── State layers (null = not active) ────────────────────────────────────
+    private var gestureState: PetState? = null       // Layer 0: temporary gesture
+    private var activityState: PetState? = null      // Layer 1: Christopher's activity
+    private var fatigueState: PetState? = null       // Layer 2: fatigue
+    private var phoneState: PetState? = null         // Layer 3: battery/foreground app
+    private var serverState: PetState = PetState.IDLE// Layer 4: server poll
+    private var currentFatigue = 0f
+    private var lastTopDrive = "boredom"
+
+    // ── Touch state ──────────────────────────────────────────────────────────
     private var initialX = 0
     private var initialY = 0
     private var initialTouchX = 0f
     private var initialTouchY = 0f
+    private var velocityTracker: VelocityTracker? = null
     private var lastTapTime = 0L
     private var tapCount = 0
-    private var isWalking = false
-    private var screenshotObserver: FileObserver? = null
 
+    // ── Walk / fling state ───────────────────────────────────────────────────
+    private var isWalking = false
+    private var flingCooldownUntil = 0L
+    private val flingTimestamps = mutableListOf<Long>()
+
+    // ── Gesture runnable IDs ─────────────────────────────────────────────────
     private val bubbleHideRunnable = Runnable { hideBubble() }
+    private val gestureResetRunnable = Runnable { clearGesture() }
+    private val idleAnimRunnable = object : Runnable {
+        override fun run() {
+            triggerIdleRandom()
+            mainHandler.postDelayed(this, (20_000L..60_000L).random())
+        }
+    }
     private val walkRunnable = object : Runnable {
         override fun run() {
             if (!isWalking) startWalk()
-            scheduleNextWalk()
         }
     }
+    private val yawnRunnable = Runnable {
+        if (fatigueState == null && currentFatigue >= FATIGUE_YAWN) {
+            setGesture(PetState.IDLE_YAWN, 2500)
+        }
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
@@ -67,11 +109,12 @@ class FloatingPetService : Service() {
         startForeground(NOTIF_ID, buildNotification())
         setupFloatingView()
         setupStatePoller()
-        startScreenshotObserver()
+        setupAppMonitor()
         scheduleNextWalk()
+        mainHandler.postDelayed(idleAnimRunnable, 30_000L)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -79,14 +122,14 @@ class FloatingPetService : Service() {
         super.onDestroy()
         isRunning = false
         statePoller.stop()
+        appMonitor.stop()
         mainHandler.removeCallbacksAndMessages(null)
-        screenshotObserver?.stopWatching()
         if (::floatView.isInitialized) {
             try { windowManager.removeView(floatView) } catch (_: Exception) {}
         }
     }
 
-    // ── Layout ──────────────────────────────────────────────────────────────
+    // ── Layout ───────────────────────────────────────────────────────────────
 
     private fun setupFloatingView() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -103,15 +146,13 @@ class FloatingPetService : Service() {
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
         params = WindowManager.LayoutParams(
-            petPx, totalH,
-            type,
+            petPx, totalH, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
-            x = 30
-            y = 100
+            x = 30; y = 100
         }
 
         windowManager.addView(floatView, params)
@@ -119,7 +160,46 @@ class FloatingPetService : Service() {
         setupTouchListener()
     }
 
-    // ── Speech Bubble ────────────────────────────────────────────────────────
+    // ── State resolution ─────────────────────────────────────────────────────
+
+    private fun resolveDisplayState(): PetState =
+        gestureState ?: activityState ?: fatigueState ?: phoneState ?: serverState
+
+    private fun applyDisplayState() {
+        val state = resolveDisplayState()
+        loadGif(state)
+    }
+
+    private fun clearGesture() {
+        gestureState = null
+        applyDisplayState()
+    }
+
+    private fun setGesture(state: PetState, durationMs: Long) {
+        mainHandler.removeCallbacks(gestureResetRunnable)
+        gestureState = state
+        applyDisplayState()
+        mainHandler.postDelayed(gestureResetRunnable, durationMs)
+    }
+
+    private fun updateFatigueState() {
+        val oldFatigueState = fatigueState
+        fatigueState = when {
+            currentFatigue >= FATIGUE_SLEEP -> PetState.COLLAPSE_SLEEP
+            currentFatigue >= FATIGUE_DOZE  -> PetState.IDLE_DOZE
+            else -> null
+        }
+        if (fatigueState != oldFatigueState) applyDisplayState()
+
+        // Schedule occasional yawn when approaching fatigue but not yet sleeping
+        mainHandler.removeCallbacks(yawnRunnable)
+        if (currentFatigue >= FATIGUE_YAWN && fatigueState == null) {
+            val delay = (30_000L..90_000L).random()
+            mainHandler.postDelayed(yawnRunnable, delay)
+        }
+    }
+
+    // ── Speech Bubble ─────────────────────────────────────────────────────────
 
     fun showBubble(text: String) {
         mainHandler.removeCallbacks(bubbleHideRunnable)
@@ -128,42 +208,29 @@ class FloatingPetService : Service() {
         mainHandler.postDelayed(bubbleHideRunnable, 6000)
     }
 
-    private fun hideBubble() {
-        bubbleView.visibility = View.GONE
+    private fun hideBubble() { bubbleView.visibility = View.GONE }
+
+    // ── Idle Random Animations ───────────────────────────────────────────────
+
+    private fun triggerIdleRandom() {
+        if (gestureState != null || isWalking) return
+        val currentDisplay = resolveDisplayState()
+        if (currentDisplay != PetState.IDLE && currentDisplay != PetState.IDLE_READING) return
+
+        val pick = listOf(PetState.IDLE_LOOK, PetState.IDLE_BUBBLE, PetState.THINKING).random()
+        setGesture(pick, (3000L..5000L).random())
     }
 
-    // ── Screenshot Detection ─────────────────────────────────────────────────
-
-    @Suppress("DEPRECATION")
-    private fun startScreenshotObserver() {
-        val screenshotsDir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-            "Screenshots"
-        )
-        if (!screenshotsDir.exists()) screenshotsDir.mkdirs()
-
-        screenshotObserver = object : FileObserver(screenshotsDir.absolutePath, CREATE) {
-            override fun onEvent(event: Int, path: String?) {
-                if (event == CREATE && path != null && !isWalking) {
-                    mainHandler.post {
-                        loadGif(PetState.NOTIFICATION)
-                        statePoller.resetToIdle()
-                        mainHandler.postDelayed({ resumePolling() }, 3000)
-                    }
-                }
-            }
-        }
-        try { screenshotObserver?.startWatching() } catch (_: Exception) {}
-    }
-
-    // ── Self-walking ─────────────────────────────────────────────────────────
+    // ── Self-walking ──────────────────────────────────────────────────────────
 
     private fun scheduleNextWalk() {
-        val delay = (45_000L..120_000L).random()
+        if (System.currentTimeMillis() < flingCooldownUntil) return
+        val delay = (45_000L..300_000L).random()
         mainHandler.postDelayed(walkRunnable, delay)
     }
 
     private fun startWalk() {
+        if (gestureState != null) { scheduleNextWalk(); return }
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
         val margin = (16 * dm.density).toInt()
@@ -180,30 +247,33 @@ class FloatingPetService : Service() {
             params!!.x = it.animatedValue as Int
             try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
         }
-        anim.addListener(object : android.animation.AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: android.animation.Animator) {
+        anim.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
                 isWalking = false
-                statePoller.resetToIdle()
-                resumePolling()
+                statePoller.start()
+                applyDisplayState()
+                scheduleNextWalk()
             }
         })
         anim.start()
     }
 
-    // ── Touch ────────────────────────────────────────────────────────────────
+    // ── Touch / Fling ─────────────────────────────────────────────────────────
 
     private fun setupTouchListener() {
         floatView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     mainHandler.removeCallbacks(walkRunnable)
-                    initialX = params!!.x
-                    initialY = params!!.y
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
+                    initialX = params!!.x; initialY = params!!.y
+                    initialTouchX = event.rawX; initialTouchY = event.rawY
+                    velocityTracker?.clear()
+                    velocityTracker = VelocityTracker.obtain()
+                    velocityTracker?.addMovement(event)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    velocityTracker?.addMovement(event)
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
@@ -214,14 +284,25 @@ class FloatingPetService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    velocityTracker?.addMovement(event)
+                    velocityTracker?.computeCurrentVelocity(1000)
+                    val vx = -(velocityTracker?.xVelocity ?: 0f)  // flip: right drag = negative screen x
+                    val vy = velocityTracker?.yVelocity ?: 0f
+                    velocityTracker?.recycle(); velocityTracker = null
+
                     val dx = Math.abs(event.rawX - initialTouchX)
                     val dy = Math.abs(event.rawY - initialTouchY)
+                    val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
+
                     if (dx < 10 && dy < 10) {
                         handleTap()
+                        scheduleNextWalk()
+                    } else if (speed >= FLING_MIN_VELOCITY) {
+                        handleFling(vx, vy)
+                        // flingCooldownUntil set inside handleFling, no scheduleNextWalk
                     } else {
-                        checkFlingOffScreen()
+                        scheduleNextWalk()
                     }
-                    scheduleNextWalk()
                     true
                 }
                 else -> false
@@ -229,79 +310,152 @@ class FloatingPetService : Service() {
         }
     }
 
-    private fun checkFlingOffScreen() {
+    private fun handleFling(vx: Float, vy: Float) {
+        // Set walk cooldown
+        flingCooldownUntil = System.currentTimeMillis() + FLING_COOLDOWN_MS
+        mainHandler.removeCallbacks(walkRunnable)
+
+        // Track fling for 3-in-1-min signal
+        val now = System.currentTimeMillis()
+        flingTimestamps.removeAll { now - it > FLING_SIGNAL_WINDOW_MS }
+        flingTimestamps.add(now)
+        if (flingTimestamps.size >= FLING_SIGNAL_COUNT) {
+            flingTimestamps.clear()
+            statePoller.sendFlingSignal()
+        }
+
+        // Animate off screen
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
-        val curX = params!!.x
-        val curY = params!!.y
-        val screenW = dm.widthPixels
-        val screenH = dm.heightPixels
+        val startX = params!!.x
+        val startY = params!!.y
 
-        val nearEdge = curX < -petPx / 2 || curX > screenW - petPx / 2
-                || curY < -petPx / 2 || curY > screenH - petPx / 2
+        // Target: fly off screen in fling direction
+        val distance = 1500f
+        val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
+        val normVx = vx / speed
+        val normVy = vy / speed
+        val targetX = (startX + normVx * distance).toInt()
+        val targetY = (startY + normVy * distance).toInt()
 
-        if (nearEdge) {
-            // Slide off, then bounce back to safe position
-            loadGif(PetState.REACT_ANNOYED)
-            val targetX = 30
-            val targetY = 200
-            mainHandler.postDelayed({
-                val anim = ValueAnimator.ofFloat(0f, 1f)
-                anim.duration = 600
-                val startX = params!!.x
-                val startY = params!!.y
-                anim.addUpdateListener { va ->
-                    val t = va.animatedFraction
-                    params!!.x = (startX + (targetX - startX) * t).toInt()
-                    params!!.y = (startY + (targetY - startY) * t).toInt()
-                    try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+        statePoller.stop()
+        val flyOutDuration = (250L..400L).random()
+        val flyAnim = ValueAnimator.ofFloat(0f, 1f)
+        flyAnim.duration = flyOutDuration
+        flyAnim.addUpdateListener { va ->
+            val t = va.animatedFraction
+            params!!.x = (startX + (targetX - startX) * t).toInt()
+            params!!.y = (startY + (targetY - startY) * t).toInt()
+            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+        }
+        flyAnim.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                mainHandler.postDelayed({ bounceOrCrawlBack() }, 300)
+            }
+        })
+        flyAnim.start()
+    }
+
+    private fun bounceOrCrawlBack() {
+        val returnX = 30
+        val returnY = 200
+        if (Math.random() < 0.5) {
+            // Bounce back fast + dizzy
+            val startX = params!!.x; val startY = params!!.y
+            val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
+            bounceAnim.duration = 400
+            bounceAnim.addUpdateListener { va ->
+                val t = va.animatedFraction
+                params!!.x = (startX + (returnX - startX) * t).toInt()
+                params!!.y = (startY + (returnY - startY) * t).toInt()
+                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            }
+            bounceAnim.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    setGesture(PetState.DIZZY, 2000)
+                    mainHandler.postDelayed({ statePoller.start() }, 2200)
                 }
-                anim.addListener(object : android.animation.AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: android.animation.Animator) {
-                        statePoller.resetToIdle()
-                        resumePolling()
-                    }
-                })
-                anim.start()
-            }, 1200)
+            })
+            loadGif(PetState.DIZZY)
+            bounceAnim.start()
+        } else {
+            // Crawl back with crabwalk
+            loadGif(PetState.CRABWALK)
+            val startX = params!!.x; val startY = params!!.y
+            val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
+            crawlAnim.duration = 1800
+            crawlAnim.addUpdateListener { va ->
+                val t = va.animatedFraction
+                params!!.x = (startX + (returnX - startX) * t).toInt()
+                params!!.y = (startY + (returnY - startY) * t).toInt()
+                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            }
+            crawlAnim.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    statePoller.start()
+                    applyDisplayState()
+                }
+            })
+            crawlAnim.start()
         }
     }
 
+    // ── Tap Gestures ──────────────────────────────────────────────────────────
+
     private fun handleTap() {
         if (isWalking) return
+
+        // Tap during sleep: brief wake
+        if (fatigueState == PetState.IDLE_DOZE || fatigueState == PetState.COLLAPSE_SLEEP) {
+            setGesture(PetState.WAKE, 1500)
+            return
+        }
+
         val now = System.currentTimeMillis()
         if (now - lastTapTime < 500) tapCount++ else tapCount = 1
         lastTapTime = now
 
-        when (tapCount) {
+        mainHandler.postDelayed({ resolveTap(tapCount) }, 400)
+    }
+
+    private fun resolveTap(count: Int) {
+        when (count) {
+            1 -> {
+                val options = listOf(
+                    PetState.IDLE_LOOK, PetState.IDLE_LOOK,
+                    PetState.REACT_ANNOYED, PetState.REACT_DOUBLE_JUMP,
+                    PetState.REACT_LEFT, PetState.REACT_RIGHT
+                )
+                setGesture(options.random(), 2500)
+            }
             2 -> {
-                loadGif(PetState.REACT_JUMP)
-                mainHandler.postDelayed({ statePoller.resetToIdle(); resumePolling() }, 2000)
+                val pick = when (lastTopDrive) {
+                    "attachment", "libido" ->
+                        listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
+                    "curiosity", "social" ->
+                        listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
+                    else ->
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.IDLE_DOZE).random()
+                }
+                setGesture(pick, 2500)
             }
             3 -> {
                 tapCount = 0
-                loadGif(PetState.BUBBLE)
-                statePoller.sendThinkingOfYou { success ->
-                    mainHandler.postDelayed({
-                        if (success) loadGif(PetState.HAPPY)
-                        mainHandler.postDelayed({ statePoller.resetToIdle(); resumePolling() }, 2500)
-                    }, 1500)
-                }
+                val pick = if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY
+                setGesture(pick, 2000)
+                statePoller.sendThinkingOfYou { _ -> }
             }
             5 -> {
                 tapCount = 0
-                loadGif(PetState.REACT_ANNOYED)
-                mainHandler.postDelayed({ statePoller.resetToIdle(); resumePolling() }, 2000)
+                val options = listOf(
+                    PetState.REACT_DOUBLE, PetState.DIZZY, PetState.ERROR
+                )
+                setGesture(options.random(), 2000)
             }
         }
     }
 
-    private fun resumePolling() {
-        statePoller.stop()
-        statePoller.start()
-    }
-
-    // ── GIF Loading ──────────────────────────────────────────────────────────
+    // ── GIF Loading ───────────────────────────────────────────────────────────
 
     fun loadGif(state: PetState) {
         try {
@@ -314,15 +468,33 @@ class FloatingPetService : Service() {
         }
     }
 
+    // ── StatePoller + AppMonitor setup ────────────────────────────────────────
+
     private fun setupStatePoller() {
         statePoller = StatePoller(this,
-            onStateChanged = { newState -> loadGif(newState) },
+            onResponse = { resp ->
+                // Update server data
+                serverState = resp.state
+                activityState = resp.activityState
+                currentFatigue = resp.fatigue
+                lastTopDrive = resp.topDrive
+                updateFatigueState()
+                if (!isWalking && gestureState == null) applyDisplayState()
+            },
             onBubble = { text -> showBubble(text) }
         )
         statePoller.start()
     }
 
-    // ── Notification / Foreground Service ────────────────────────────────────
+    private fun setupAppMonitor() {
+        appMonitor = AppStateMonitor(this) { newPhoneState ->
+            phoneState = newPhoneState
+            if (gestureState == null && !isWalking) applyDisplayState()
+        }
+        appMonitor.start()
+    }
+
+    // ── Foreground notification ───────────────────────────────────────────────
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
