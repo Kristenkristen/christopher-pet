@@ -60,8 +60,9 @@ class FloatingPetService : Service() {
     private var gestureState: PetState? = null       // Layer 0: temporary gesture
     private var activityState: PetState? = null      // Layer 1: Christopher's activity
     private var fatigueState: PetState? = null       // Layer 2: fatigue
-    private var phoneState: PetState? = null         // Layer 3: battery/foreground app
-    private var serverState: PetState = PetState.IDLE// Layer 4: server poll
+    private var musicState: PetState? = null         // Layer 3: 网易云 headphones (persistent)
+    private var phoneState: PetState? = null         // Layer 4: shopping/charging/battery
+    private var serverState: PetState = PetState.IDLE// Layer 5: server poll
     private var currentFatigue = 0f
     private var lastTopDrive = "boredom"
 
@@ -176,7 +177,7 @@ class FloatingPetService : Service() {
     // ── State resolution ─────────────────────────────────────────────────────
 
     private fun resolveDisplayState(): PetState =
-        gestureState ?: activityState ?: fatigueState ?: phoneState ?: serverState
+        gestureState ?: activityState ?: fatigueState ?: musicState ?: phoneState ?: serverState
 
     private fun applyDisplayState() {
         val state = resolveDisplayState()
@@ -519,10 +520,16 @@ class FloatingPetService : Service() {
     }
 
     private fun setupAppMonitor() {
-        appMonitor = AppStateMonitor(this) { newPhoneState ->
-            phoneState = newPhoneState
-            if (gestureState == null && !isWalking) applyDisplayState()
-        }
+        appMonitor = AppStateMonitor(this,
+            onMusicStateChanged = { newMusicState ->
+                musicState = newMusicState
+                if (gestureState == null && !isWalking) applyDisplayState()
+            },
+            onPhoneStateChanged = { newPhoneState ->
+                phoneState = newPhoneState
+                if (gestureState == null && !isWalking) applyDisplayState()
+            }
+        )
         appMonitor.start()
     }
 
