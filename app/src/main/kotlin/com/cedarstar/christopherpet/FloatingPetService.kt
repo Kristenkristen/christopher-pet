@@ -108,7 +108,7 @@ class FloatingPetService : Service() {
         }
     }
     private val yawnRunnable = Runnable {
-        if (fatigueState == null && currentFatigue >= FATIGUE_YAWN) {
+        if (!isWalking && fatigueState == null && currentFatigue >= FATIGUE_YAWN) {
             setGesture(PetState.IDLE_YAWN, 2500)
         }
     }
@@ -480,13 +480,17 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox is the inner 50% of the pet view — visual size unchanged
+    // Tap hitbox: accounts for GIF centering in the taller window (bubble reserves BUBBLE_HEIGHT_DP above)
+    // gifView is match_parent in a (petPx+bubbleH) tall window → GIF centered vertically → pet starts at bubbleH/2 offset
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
         val petPx = PET_SIZE_DP * density
-        val inset = 35 * density  // 35dp inset each side → 70dp×70dp hit area inside 140dp pet
+        val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density
+        // When bubble is gone, gifView fills totalH → GIF centered → pet occupies middle petPx of totalH
+        val petTop = (totalH - petPx) / 2f
+        val inset = 20 * density  // 20dp inset around the visual pet → 100dp×100dp hit area
         return localX >= inset && localX <= petPx - inset &&
-               localY >= inset && localY <= petPx - inset
+               localY >= petTop + inset && localY <= petTop + petPx - inset
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
@@ -496,6 +500,7 @@ class FloatingPetService : Service() {
         try {
             val gifDrawable = GifDrawable(assets, state.gifAssetPath())
             gifView.setImageDrawable(gifDrawable)
+            gifDrawable.start()
             currentGifState = state
         } catch (_: Exception) {
             if (state != PetState.IDLE) {
