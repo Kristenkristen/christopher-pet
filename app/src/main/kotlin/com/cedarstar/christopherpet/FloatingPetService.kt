@@ -10,7 +10,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
-import android.graphics.Region
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -176,12 +175,6 @@ class FloatingPetService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.END
             x = 30; y = 100
-            // API 30+: restrict touchable region to the pet GIF area so transparent
-            // areas of the overlay don't block touches to underlying apps
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val petTop = (totalH - petPx) / 2
-                touchableRegion = Region(0, petTop, petPx, petTop + petPx)
-            }
         }
 
         windowManager.addView(floatView, params)
@@ -296,15 +289,13 @@ class FloatingPetService : Service() {
         floatView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    // Pass through touches outside the pet GIF area (API < 30 fallback)
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                        val d = resources.displayMetrics.density
-                        val petPx = PET_SIZE_DP * d
-                        val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * d
-                        val petTop = (totalH - petPx) / 2f
-                        if (event.y < petTop || event.y > petTop + petPx) {
-                            return@setOnTouchListener false
-                        }
+                    // Pass through touches above/below the pet GIF area (transparent zones)
+                    val d = resources.displayMetrics.density
+                    val petPxF = PET_SIZE_DP * d
+                    val totalHF = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * d
+                    val petTopF = (totalHF - petPxF) / 2f
+                    if (event.y < petTopF || event.y > petTopF + petPxF) {
+                        return@setOnTouchListener false
                     }
                     mainHandler.removeCallbacks(walkRunnable)
                     initialX = params!!.x; initialY = params!!.y
@@ -344,6 +335,7 @@ class FloatingPetService : Service() {
                                 shakeCooldownUntil = System.currentTimeMillis() + 5000L
                                 val pick = if (shakeReversals >= 7) PetState.REACT_ANNOYED else PetState.DIZZY
                                 setGesture(pick, 2200)
+                                statePoller.sendFlingSignal()  // notify Christopher he got shaken
                                 shakeReversals = 0
                             }
                         }
@@ -437,8 +429,8 @@ class FloatingPetService : Service() {
         isWalking = true
         val remaining = maxOf(0L, flingCooldownUntil - System.currentTimeMillis())
 
-        if (Math.random() < 0.3) {
-            // 30%: fast bounce back then dizzy
+        if (Math.random() < 0.5) {
+            // 50%: fast bounce back then dizzy
             val startX = params!!.x; val startY = params!!.y
             loadGif(PetState.DIZZY)
             val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
