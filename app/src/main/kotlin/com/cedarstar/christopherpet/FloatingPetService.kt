@@ -526,18 +526,16 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox: 60×60dp zone centered on the crab body
+    // Tap hitbox: 20dp inset on each side of the visual pet area
     // Window: 140×220dp. GIF (140×140dp) centered vertically → pet at y[40dp..180dp]
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
         val petPx = PET_SIZE_DP * density
         val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density
         val petTop = (totalH - petPx) / 2f
-        val centerX = petPx / 2f
-        val centerY = petTop + petPx / 2f
-        val halfHit = 30 * density  // 30dp radius → 60×60dp hit area
-        return localX >= centerX - halfHit && localX <= centerX + halfHit &&
-               localY >= centerY - halfHit && localY <= centerY + halfHit
+        val inset = 20 * density  // 20dp inset → 100×100dp hit area
+        return localX >= inset && localX <= petPx - inset &&
+               localY >= petTop + inset && localY <= petTop + petPx - inset
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
