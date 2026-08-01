@@ -289,12 +289,9 @@ class FloatingPetService : Service() {
         floatView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    // Pass through touches above/below the pet GIF area (transparent zones)
-                    val d = resources.displayMetrics.density
-                    val petPxF = PET_SIZE_DP * d
-                    val totalHF = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * d
-                    val petTopF = (totalHF - petPxF) / 2f
-                    if (event.y < petTopF || event.y > petTopF + petPxF) {
+                    // Pass through if touch is outside the crab hit zone — lets user tap
+                    // through the transparent parts of the overlay to the app below.
+                    if (!isTouchInHitArea(event.x, event.y)) {
                         return@setOnTouchListener false
                     }
                     mainHandler.removeCallbacks(walkRunnable)
@@ -535,8 +532,8 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox: 110×110dp centered on the crab body (covers body + main limbs, excludes
-    // outer transparent edges of the 140dp GIF frame).
+    // Tap hitbox: 50×50dp centered on the crab body (~1/3 of the 140dp GIF width).
+    // Touches OUTSIDE this zone return false in ACTION_DOWN, passing through to the app below.
     // Window: 140×220dp. GIF (140×140dp) renders centered at (70dp, 110dp) from window top-left.
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
@@ -545,7 +542,7 @@ class FloatingPetService : Service() {
         val petTop = (totalH - petPx) / 2f
         val centerX = petPx / 2f
         val centerY = petTop + petPx / 2f
-        val halfHit = 55 * density  // 55dp radius → 110×110dp hit zone
+        val halfHit = 25 * density  // 25dp radius → 50×50dp hit zone
         return localX >= centerX - halfHit && localX <= centerX + halfHit &&
                localY >= centerY - halfHit && localY <= centerY + halfHit
     }
