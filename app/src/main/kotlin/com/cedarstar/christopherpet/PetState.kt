@@ -4,46 +4,47 @@ enum class PetState(val gifName: String) {
     // Base states
     IDLE("clawd-idle"),
     IDLE_READING("clawd-idle-reading"),
-    IDLE_LOOK("clawd-idle-reading"),          // SVG bad → use idle-reading
-    IDLE_BUBBLE("clawd-bubble"),              // SVG bad → use bubble (good animated GIF)
-    IDLE_DOZE("clawd-sleeping"),             // SVG bad → use sleeping
-    IDLE_COLLAPSE("clawd-sleeping"),         // SVG bad → use sleeping
-    IDLE_YAWN("clawd-idle"),                 // SVG bad → use idle
-    IDLE_LOW_BATTERY("clawd-sleeping"),      // SVG bad → use sleeping
+    IDLE_LOOK("clawd-idle-look"),
+    IDLE_BUBBLE("clawd-idle-bubble"),
+    IDLE_DOZE("clawd-idle-doze"),
+    IDLE_COLLAPSE("clawd-idle-collapse"),
+    IDLE_YAWN("clawd-idle-yawn"),
+    IDLE_LOW_BATTERY("clawd-idle-low-battery"),
 
-    // Activity / working — actual asset filenames omit "working-" prefix
+    // Activity / working states
     THINKING("clawd-thinking"),
     TYPING("clawd-typing"),
-    TYPING_BOSS("clawd-typing"),
+    TYPING_BOSS("clawd-working-typing-boss"),
     SWEEPING("clawd-sweeping"),
     CONDUCTING("clawd-conducting"),
     DEBUGGER("clawd-debugger"),
     JUGGLING("clawd-juggling"),
     BUILDING("clawd-building"),
-    BUILDING_BOXES("clawd-working-building-boxes"),  // this one keeps the prefix
+    BUILDING_BOXES("clawd-working-building-boxes"),
     CARRYING("clawd-carrying"),
-    ULTRATHINK("clawd-thinking"),
-    WIZARD("clawd-thinking"),
+    ULTRATHINK("clawd-working-ultrathink"),
+    WIZARD("clawd-working-wizard"),
 
     // Status
     SLEEPING("clawd-sleeping"),
-    COLLAPSE_SLEEP("clawd-sleeping"),        // SVG bad → use sleeping
+    COLLAPSE_SLEEP("clawd-collapse-sleep"),
     HAPPY("clawd-happy"),
     HEADPHONES("clawd-headphones-groove"),
     NOTIFICATION("clawd-notification"),
-    WAKE("clawd-happy"),                     // SVG bad → use happy
+    NOTIFICATION_RETIRED("clawd-notification-retired-2026-05-12"),
+    WAKE("clawd-wake"),
 
     // Reactions
     ERROR("clawd-error"),
-    DIZZY("clawd-react-double-jump"),        // SVG bad → use double-jump (energetic)
-    AEGYO_SHY("clawd-happy"),               // SVG bad → use happy
-    COFFEE_HAND("clawd-idle"),              // SVG bad → use idle
+    DIZZY("clawd-dizzy"),
+    AEGYO_SHY("clawd-aegyo-shy"),
+    COFFEE_HAND("clawd-coffee-hand"),
     REACT_ANNOYED("clawd-react-annoyed"),
-    REACT_DOUBLE("clawd-react-annoyed"),    // SVG bad → use annoyed
+    REACT_DOUBLE("clawd-react-double"),
     REACT_DOUBLE_JUMP("clawd-react-double-jump"),
-    REACT_DRAG("clawd-react-annoyed"),      // SVG bad → use annoyed
-    REACT_LEFT("clawd-react-annoyed"),      // SVG bad → use annoyed
-    REACT_RIGHT("clawd-react-annoyed"),     // SVG bad → use annoyed
+    REACT_DRAG("clawd-react-drag"),
+    REACT_LEFT("clawd-react-left"),
+    REACT_RIGHT("clawd-react-right"),
 
     // Motion
     CRABWALK("clawd-mini-crabwalk"),
