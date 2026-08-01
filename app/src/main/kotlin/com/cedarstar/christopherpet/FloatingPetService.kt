@@ -85,6 +85,14 @@ class FloatingPetService : Service() {
     private var flingCooldownUntil = 0L
     private val flingTimestamps = mutableListOf<Long>()
 
+    // ── Shake detection ──────────────────────────────────────────────────────
+    private var shakeLastX = 0f
+    private var shakeLastY = 0f
+    private var shakeDir = 0       // +1 or -1, tracks last movement direction
+    private var shakeReversals = 0 // direction reversals = shake count
+    private var shakeStartTime = 0L
+    private var shakeCooldownUntil = 0L
+
     // ── Runnables ────────────────────────────────────────────────────────────
     private val bubbleHideRunnable = Runnable { hideBubble() }
     private val gestureResetRunnable = Runnable { clearGesture() }
@@ -288,6 +296,10 @@ class FloatingPetService : Service() {
                     velocityTracker?.clear()
                     velocityTracker = VelocityTracker.obtain()
                     velocityTracker?.addMovement(event)
+                    // Reset shake tracking
+                    shakeLastX = event.rawX; shakeLastY = event.rawY
+                    shakeDir = 0; shakeReversals = 0
+                    shakeStartTime = System.currentTimeMillis()
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -299,6 +311,30 @@ class FloatingPetService : Service() {
                         params!!.x = initialX - dx
                         params!!.y = initialY + dy
                         try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                    }
+                    // Shake detection: count direction reversals within a short window
+                    val now = System.currentTimeMillis()
+                    if (now - shakeStartTime < 2000) {
+                        val mdx = event.rawX - shakeLastX
+                        val mdy = event.rawY - shakeLastY
+                        val dominant = if (Math.abs(mdx) > Math.abs(mdy)) mdx else mdy
+                        if (Math.abs(dominant) > 18f) {
+                            val newDir = if (dominant > 0) 1 else -1
+                            if (shakeDir != 0 && newDir != shakeDir) shakeReversals++
+                            shakeDir = newDir
+                            shakeLastX = event.rawX; shakeLastY = event.rawY
+                            if (shakeReversals >= 4 && System.currentTimeMillis() > shakeCooldownUntil) {
+                                shakeCooldownUntil = System.currentTimeMillis() + 5000L
+                                val pick = if (shakeReversals >= 7) PetState.REACT_ANNOYED else PetState.DIZZY
+                                setGesture(pick, 2200)
+                                shakeReversals = 0
+                            }
+                        }
+                    } else {
+                        // Reset after 2s of continuous drag
+                        shakeLastX = event.rawX; shakeLastY = event.rawY
+                        shakeDir = 0; shakeReversals = 0
+                        shakeStartTime = now
                     }
                     true
                 }
