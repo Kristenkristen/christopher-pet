@@ -10,6 +10,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.Region
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -175,6 +176,12 @@ class FloatingPetService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.END
             x = 30; y = 100
+            // API 30+: restrict touchable region to the pet GIF area so transparent
+            // areas of the overlay don't block touches to underlying apps
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val petTop = (totalH - petPx) / 2
+                touchableRegion = Region(0, petTop, petPx, petTop + petPx)
+            }
         }
 
         windowManager.addView(floatView, params)
@@ -289,6 +296,16 @@ class FloatingPetService : Service() {
         floatView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    // Pass through touches outside the pet GIF area (API < 30 fallback)
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                        val d = resources.displayMetrics.density
+                        val petPx = PET_SIZE_DP * d
+                        val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * d
+                        val petTop = (totalH - petPx) / 2f
+                        if (event.y < petTop || event.y > petTop + petPx) {
+                            return@setOnTouchListener false
+                        }
+                    }
                     mainHandler.removeCallbacks(walkRunnable)
                     initialX = params!!.x; initialY = params!!.y
                     initialTouchX = event.rawX; initialTouchY = event.rawY
