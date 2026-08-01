@@ -322,25 +322,25 @@ class FloatingPetService : Service() {
                     }
                     // Shake detection: count direction reversals within a short window
                     val now = System.currentTimeMillis()
-                    if (now - shakeStartTime < 2000) {
+                    if (now - shakeStartTime < 3000) {
                         val mdx = event.rawX - shakeLastX
                         val mdy = event.rawY - shakeLastY
                         val dominant = if (Math.abs(mdx) > Math.abs(mdy)) mdx else mdy
-                        if (Math.abs(dominant) > 18f) {
+                        if (Math.abs(dominant) > 12f) {
                             val newDir = if (dominant > 0) 1 else -1
                             if (shakeDir != 0 && newDir != shakeDir) shakeReversals++
                             shakeDir = newDir
                             shakeLastX = event.rawX; shakeLastY = event.rawY
-                            if (shakeReversals >= 4 && System.currentTimeMillis() > shakeCooldownUntil) {
+                            if (shakeReversals >= 3 && System.currentTimeMillis() > shakeCooldownUntil) {
                                 shakeCooldownUntil = System.currentTimeMillis() + 5000L
-                                val pick = if (shakeReversals >= 7) PetState.REACT_ANNOYED else PetState.DIZZY
+                                val pick = if (shakeReversals >= 6) PetState.REACT_ANNOYED else PetState.DIZZY
                                 setGesture(pick, 2200)
                                 statePoller.sendFlingSignal()  // notify Christopher he got shaken
                                 shakeReversals = 0
                             }
                         }
                     } else {
-                        // Reset after 2s of continuous drag
+                        // Reset after 3s of continuous drag
                         shakeLastX = event.rawX; shakeLastY = event.rawY
                         shakeDir = 0; shakeReversals = 0
                         shakeStartTime = now
@@ -481,19 +481,19 @@ class FloatingPetService : Service() {
     private fun handleTap() {
         if (isWalking) return
 
-        // Tap during sleep: brief wake
-        if (fatigueState == PetState.IDLE_DOZE || fatigueState == PetState.COLLAPSE_SLEEP) {
+        // Tap during deep sleep only: brief wake. Doze state still allows normal taps.
+        if (fatigueState == PetState.COLLAPSE_SLEEP) {
             setGesture(PetState.WAKE, 1500)
             return
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastTapTime < 500) tapCount++ else tapCount = 1
+        if (now - lastTapTime < 700) tapCount++ else tapCount = 1
         lastTapTime = now
 
         // Cancel any pending tap resolution and reschedule — only the LAST tap fires
         mainHandler.removeCallbacks(tapResolutionRunnable)
-        mainHandler.postDelayed(tapResolutionRunnable, 400)
+        mainHandler.postDelayed(tapResolutionRunnable, 600)
     }
 
     private fun resolveTap(count: Int) {
@@ -535,16 +535,18 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox: 20dp inset on each side of the visual pet area
-    // Window: 140×220dp. GIF (140×140dp) centered vertically → pet at y[40dp..180dp]
+    // Tap hitbox: 80×80dp centered on the crab body
+    // Window: 140×220dp. GIF (140×140dp) centered vertically → pet center at (70dp, 110dp)
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
         val petPx = PET_SIZE_DP * density
         val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density
         val petTop = (totalH - petPx) / 2f
-        val inset = 20 * density  // 20dp inset → 100×100dp hit area
-        return localX >= inset && localX <= petPx - inset &&
-               localY >= petTop + inset && localY <= petTop + petPx - inset
+        val centerX = petPx / 2f
+        val centerY = petTop + petPx / 2f
+        val halfHit = 40 * density  // 40dp radius → 80×80dp hit area
+        return localX >= centerX - halfHit && localX <= centerX + halfHit &&
+               localY >= centerY - halfHit && localY <= centerY + halfHit
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
