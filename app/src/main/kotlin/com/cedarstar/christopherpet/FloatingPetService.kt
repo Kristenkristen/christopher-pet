@@ -176,8 +176,13 @@ class FloatingPetService : Service() {
 
     // ── State resolution ─────────────────────────────────────────────────────
 
-    private fun resolveDisplayState(): PetState =
-        gestureState ?: activityState ?: fatigueState ?: musicState ?: phoneState ?: serverState
+    private fun resolveDisplayState(): PetState {
+        gestureState?.let { return it }
+        activityState?.let { return it }
+        // Typing/thinking from server punches through fatigue — always show when chatting
+        if (serverState == PetState.TYPING || serverState == PetState.THINKING) return serverState
+        return fatigueState ?: musicState ?: phoneState ?: serverState
+    }
 
     private fun applyDisplayState() {
         val state = resolveDisplayState()
