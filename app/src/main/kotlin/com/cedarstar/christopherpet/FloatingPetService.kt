@@ -535,16 +535,19 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox: full pet GIF zone (140dp wide, 140dp tall, starts at 40dp from window top).
-    // ACTION_DOWN already filters out the transparent bubble zones above/below, so any
-    // touch that reached here is within the visible pet area — accept the whole thing.
+    // Tap hitbox: 110×110dp centered on the crab body (covers body + main limbs, excludes
+    // outer transparent edges of the 140dp GIF frame).
+    // Window: 140×220dp. GIF (140×140dp) renders centered at (70dp, 110dp) from window top-left.
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
         val petPx = PET_SIZE_DP * density
         val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density
         val petTop = (totalH - petPx) / 2f
-        return localX >= 0f && localX <= petPx &&
-               localY >= petTop && localY <= petTop + petPx
+        val centerX = petPx / 2f
+        val centerY = petTop + petPx / 2f
+        val halfHit = 55 * density  // 55dp radius → 110×110dp hit zone
+        return localX >= centerX - halfHit && localX <= centerX + halfHit &&
+               localY >= centerY - halfHit && localY <= centerY + halfHit
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
