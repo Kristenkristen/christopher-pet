@@ -377,27 +377,53 @@ class FloatingPetService : Service() {
         val returnY = ((80 * dm.density).toInt()..(220 * dm.density).toInt()).random()
 
         isWalking = true
-        loadGif(PetState.CRABWALK)
-        val startX = params!!.x; val startY = params!!.y
-        val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
-        crawlAnim.duration = 1800
-        crawlAnim.addUpdateListener { va ->
-            val t = va.animatedFraction
-            params!!.x = (startX + (returnX - startX) * t).toInt()
-            params!!.y = (startY + (returnY - startY) * t).toInt()
-            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-        }
-        crawlAnim.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                isWalking = false
-                statePoller.start()
-                applyDisplayState()
-                // Schedule next walk after fling cooldown (scheduleNextWalk would no-op during cooldown)
-                val remaining = maxOf(0L, flingCooldownUntil - System.currentTimeMillis())
-                mainHandler.postDelayed(walkRunnable, remaining + (45_000L..120_000L).random())
+        val remaining = maxOf(0L, flingCooldownUntil - System.currentTimeMillis())
+
+        if (Math.random() < 0.3) {
+            // 30%: fast bounce back then dizzy
+            val startX = params!!.x; val startY = params!!.y
+            loadGif(PetState.DIZZY)
+            val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
+            bounceAnim.duration = 350
+            bounceAnim.addUpdateListener { va ->
+                val t = va.animatedFraction
+                params!!.x = (startX + (returnX - startX) * t).toInt()
+                params!!.y = (startY + (returnY - startY) * t).toInt()
+                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
             }
-        })
-        crawlAnim.start()
+            bounceAnim.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    isWalking = false
+                    setGesture(PetState.DIZZY, 2000)
+                    mainHandler.postDelayed({
+                        statePoller.start()
+                        mainHandler.postDelayed(walkRunnable, remaining + (45_000L..120_000L).random())
+                    }, 2200)
+                }
+            })
+            bounceAnim.start()
+        } else {
+            // 70%: crabwalk back
+            loadGif(PetState.CRABWALK)
+            val startX = params!!.x; val startY = params!!.y
+            val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
+            crawlAnim.duration = 1800
+            crawlAnim.addUpdateListener { va ->
+                val t = va.animatedFraction
+                params!!.x = (startX + (returnX - startX) * t).toInt()
+                params!!.y = (startY + (returnY - startY) * t).toInt()
+                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            }
+            crawlAnim.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    isWalking = false
+                    statePoller.start()
+                    applyDisplayState()
+                    mainHandler.postDelayed(walkRunnable, remaining + (45_000L..120_000L).random())
+                }
+            })
+            crawlAnim.start()
+        }
     }
 
     // ── Tap Gestures ──────────────────────────────────────────────────────────
@@ -445,7 +471,8 @@ class FloatingPetService : Service() {
                 // Random annoyance (swapped from old 5-tap)
                 val options = listOf(
                     PetState.REACT_DOUBLE, PetState.DIZZY,
-                    PetState.ERROR, PetState.REACT_ANNOYED
+                    PetState.ERROR, PetState.REACT_ANNOYED,
+                    PetState.NOTIFICATION_RETIRED
                 )
                 setGesture(options.random(), 2000)
             }
