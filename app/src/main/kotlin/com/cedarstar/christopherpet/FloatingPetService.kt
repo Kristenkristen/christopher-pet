@@ -485,17 +485,18 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox: accounts for GIF centering in the taller window (bubble reserves BUBBLE_HEIGHT_DP above)
-    // gifView is match_parent in a (petPx+bubbleH) tall window → GIF centered vertically → pet starts at bubbleH/2 offset
+    // Tap hitbox: 60×60dp zone centered on the crab body
+    // Window: 140×220dp. GIF (140×140dp) centered vertically → pet at y[40dp..180dp]
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
         val petPx = PET_SIZE_DP * density
         val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density
-        // When bubble is gone, gifView fills totalH → GIF centered → pet occupies middle petPx of totalH
         val petTop = (totalH - petPx) / 2f
-        val inset = 20 * density  // 20dp inset around the visual pet → 100dp×100dp hit area
-        return localX >= inset && localX <= petPx - inset &&
-               localY >= petTop + inset && localY <= petTop + petPx - inset
+        val centerX = petPx / 2f
+        val centerY = petTop + petPx / 2f
+        val halfHit = 30 * density  // 30dp radius → 60×60dp hit area
+        return localX >= centerX - halfHit && localX <= centerX + halfHit &&
+               localY >= centerY - halfHit && localY <= centerY + halfHit
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
