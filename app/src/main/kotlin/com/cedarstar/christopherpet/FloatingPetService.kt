@@ -190,9 +190,13 @@ class FloatingPetService : Service() {
         if (isDragging) return PetState.REACT_DRAG  // highest: show drag while held
         gestureState?.let { return it }
         activityState?.let { return it }
-        // Fatigue state blocks typing/thinking animation (spec priority: fatigue > server poll)
+        // Fatigue (Layer 3) blocks server typing/notification (Layer 4)
         fatigueState?.let { return it }
-        return musicState ?: phoneState ?: serverState
+        // Layer 4: server state — overrides phone/music state unless it's just idle
+        val srv = serverState
+        if (srv != PetState.IDLE) return srv
+        // Layer 5: phone hardware state (music/shopping/charging/battery)
+        return musicState ?: phoneState ?: PetState.IDLE
     }
 
     private fun applyDisplayState() {
