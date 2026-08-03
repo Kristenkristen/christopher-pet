@@ -1,17 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="wrap_content"
-    android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:gravity="end">
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Pet GIF — fills full window area -->
+    <pl.droidsonroids.gif.GifImageView
+        android:id="@+id/gifView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter"/>
 
     <!-- Speech bubble — hidden by default, appears above pet -->
     <TextView
         android:id="@+id/bubbleText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="4dp"
-        android:layout_marginEnd="8dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
         android:background="@drawable/bubble_bg"
         android:paddingHorizontal="10dp"
         android:paddingVertical="6dp"
@@ -20,11 +25,4 @@
         android:maxWidth="180dp"
         android:visibility="gone"/>
 
-    <!-- Pet GIF -->
-    <pl.droidsonroids.gif.GifImageView
-        android:id="@+id/gifView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:scaleType="fitCenter"/>
-
-</LinearLayout>
+</FrameLayout>
