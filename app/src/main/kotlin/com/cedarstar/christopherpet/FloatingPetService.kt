@@ -55,7 +55,8 @@ class FloatingPetService : Service() {
     // Touch window: invisible 84dp window centered on crab body, intercepts touches
     private lateinit var touchView: View
     private var touchParams: WindowManager.LayoutParams? = null
-    private var touchMarginPx = 0  // margin from display window edge to touch window edge
+    private var touchMarginPx = 0     // side margin (left/right offset from display window edge)
+    private var touchTopOffsetPx = 0  // top offset — larger than side margin so upper GIF area passes through
 
     private lateinit var statePoller: StatePoller
     private lateinit var appMonitor: AppStateMonitor
@@ -169,9 +170,12 @@ class FloatingPetService : Service() {
 
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
-        // Touch zone: center 60% of the pet = 84dp (20% margin each side)
+        // Touch zone: 60% wide (20% side margins), lower 60% in height (40% top offset).
+        // The 40% top offset means the upper portion of the GIF (which is transparent anyway)
+        // never blocks the app below — only the crab body area captures touches.
         val hitPx = (petPx * 0.60f).toInt()
-        touchMarginPx = (petPx * 0.20f).toInt()
+        touchMarginPx = (petPx * 0.20f).toInt()    // left/right side margin: 20%
+        touchTopOffsetPx = (petPx * 0.40f).toInt() // top offset: 40% (push zone down)
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -193,16 +197,20 @@ class FloatingPetService : Service() {
         }
         windowManager.addView(floatView, params)
 
-        // Touch window: 84dp, positioned over the crab body (center of the 140dp display window)
-        touchView = View(this)
+        // Touch window: 84dp wide, 84dp tall, positioned at the crab body zone.
+        // PixelFormat.TRANSPARENT = zero visual footprint (no dimming of the display window below).
+        touchView = View(this).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            setWillNotDraw(true)
+        }
         touchParams = WindowManager.LayoutParams(
             hitPx, hitPx, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
+            PixelFormat.TRANSPARENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = startX + touchMarginPx; y = startY + touchMarginPx
+            x = startX + touchMarginPx; y = startY + touchTopOffsetPx
         }
         windowManager.addView(touchView, touchParams)
 
@@ -210,11 +218,11 @@ class FloatingPetService : Service() {
         setupTouchListener()
     }
 
-    // Keep touch window centered on the display window whenever position changes
+    // Keep touch window tracking the display window whenever position changes
     private fun syncTouchWindow() {
         val tp = touchParams ?: return
         tp.x = params!!.x + touchMarginPx
-        tp.y = params!!.y + touchMarginPx
+        tp.y = params!!.y + touchTopOffsetPx
         try { windowManager.updateViewLayout(touchView, tp) } catch (_: Exception) {}
     }
 
