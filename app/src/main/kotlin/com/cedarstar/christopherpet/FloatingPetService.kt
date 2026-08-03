@@ -325,7 +325,7 @@ class FloatingPetService : Service() {
 
                     if (dx < 30 && dy < 30 && isTouchInHitArea(downLocalX, downLocalY)) {
                         handleTap()
-                    } else if (speed >= FLING_MIN_VELOCITY) {
+                    } else if (speed >= FLING_MIN_VELOCITY && !isWalking) {
                         handleFling(vx, vy)
                     }
                     true
@@ -336,6 +336,7 @@ class FloatingPetService : Service() {
     }
 
     private fun handleFling(vx: Float, vy: Float) {
+        isWalking = true  // lock immediately so re-entrant flings are blocked during fly-off
         flingCooldownUntil = System.currentTimeMillis() + FLING_COOLDOWN_MS
 
         // Track 3-flings-in-1-min signal
@@ -390,7 +391,7 @@ class FloatingPetService : Service() {
         val remaining = maxOf(0L, flingCooldownUntil - System.currentTimeMillis())
 
         if (Math.random() < 0.5) {
-            // 50%: fast bounce back then dizzy
+            // 50%: fast teleport back + dizzy
             val startX = params!!.x; val startY = params!!.y
             loadGif(PetState.DIZZY)
             val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -413,7 +414,7 @@ class FloatingPetService : Service() {
             })
             bounceAnim.start()
         } else {
-            // 70%: crabwalk back
+            // 50%: crabwalk back
             loadGif(PetState.CRABWALK)
             val startX = params!!.x; val startY = params!!.y
             val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -482,6 +483,18 @@ class FloatingPetService : Service() {
                 val pick = if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY
                 setGesture(pick, 2000)
                 statePoller.sendThinkingOfYou { _ -> }
+            }
+            4 -> {
+                // 4 taps: treat same as double (drive-based reaction)
+                val pick = when (lastTopDrive) {
+                    "attachment", "libido" ->
+                        listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
+                    "curiosity", "social" ->
+                        listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
+                    else ->
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND).random()
+                }
+                setGesture(pick, 2500)
             }
             5 -> {
                 // Chaos / annoyance (quintuple tap) — must not conflate with triple
