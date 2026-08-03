@@ -13,7 +13,8 @@ import android.os.Looper
 class AppStateMonitor(
     private val context: Context,
     private val onMusicStateChanged: (PetState?) -> Unit,   // Layer 3: 网易云 headphones
-    private val onPhoneStateChanged: (PetState?) -> Unit    // Layer 4: shopping/charging/battery
+    private val onPhoneStateChanged: (PetState?) -> Unit,   // Layer 4: shopping/charging/battery
+    private val onScrollAlert: (() -> Unit)? = null         // 抖音/小红书 cumulative 1h alert
 ) {
     companion object {
         private const val LOW_BATTERY_THRESHOLD = 19
@@ -23,11 +24,17 @@ class AppStateMonitor(
         private const val MUSIC_WINDOW_MS = 30 * 60 * 1000L
         // Shopping apps: only relevant if actively in foreground (60s window)
         private const val PHONE_WINDOW_MS = 60_000L
+        // Scroll alert: fire once per cumulative hour of Douyin/Xiaohongshu usage today
+        private const val SCROLL_ALERT_INTERVAL_MS = 60 * 60 * 1000L
 
         private val SHOPPING_PACKAGES = setOf(
             "com.taobao.taobao",
             "com.sankuai.meituan",
             "com.taobao.idlefish"
+        )
+        private val SCROLL_PACKAGES = setOf(
+            "com.ss.android.ugc.aweme",   // 抖音
+            "com.xingin.xhs"              // 小红书
         )
     }
 
@@ -37,6 +44,7 @@ class AppStateMonitor(
     private var isCharging = false
     private var batteryLevel = 100
     private var running = false
+    private var scrollHoursAlerted = 0L  // cumulative 1-hour intervals already notified
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -92,7 +100,15 @@ class AppStateMonitor(
                 }
             }
 
+            // 抖音/小红书: fire once each time cumulative usage today crosses another 1-hour mark
+            val todayScrollMs = if (onScrollAlert != null) getScrollAppTodayUsageMs() else 0L
+            val completedScrollHours = todayScrollMs / SCROLL_ALERT_INTERVAL_MS
+
             handler.post {
+                if (onScrollAlert != null && completedScrollHours > scrollHoursAlerted) {
+                    scrollHoursAlerted = completedScrollHours
+                    onScrollAlert.invoke()
+                }
                 if (newMusicState != currentMusicState) {
                     currentMusicState = newMusicState
                     onMusicStateChanged(newMusicState)
@@ -112,6 +128,18 @@ class AppStateMonitor(
             val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - windowMs, now)
             stats?.maxByOrNull { it.lastTimeUsed }?.packageName
         } catch (_: Exception) { null }
+    }
+
+    // Returns total milliseconds spent in 抖音/小红书 today
+    private fun getScrollAppTodayUsageMs(): Long {
+        return try {
+            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val now = System.currentTimeMillis()
+            val startOfDay = now - (now % (24 * 60 * 60 * 1000L))
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, startOfDay, now)
+            stats?.filter { it.packageName in SCROLL_PACKAGES }
+                ?.sumOf { it.totalTimeInForeground } ?: 0L
+        } catch (_: Exception) { 0L }
     }
 
     private fun isMusicActive(): Boolean {
