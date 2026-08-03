@@ -10,7 +10,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
-import android.graphics.Region
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -193,55 +192,42 @@ class FloatingPetService : Service() {
         val startX = dm.widthPixels - petPx - (30 * dm.density).toInt()
         val startY = (100 * dm.density).toInt()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // API 31+: single window + touchableRegion.
-            // Only the crab body rectangle receives touches; everything outside passes through
-            // to the app below. No second window = no SurfaceFlinger compositing artifact.
-            params = WindowManager.LayoutParams(
-                petPx, petPx, type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = startX; y = startY
-                touchableRegion = Region(hitLeft, hitTop, hitRight, hitBottom)
-            }
-            windowManager.addView(floatView, params)
-        } else {
-            // API < 31: display window (NOT_TOUCHABLE, shows GIF) + tiny touch window at
-            // the crab body position (nearly invisible, avoids Samsung dimming artifact).
-            params = WindowManager.LayoutParams(
-                petPx, petPx, type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = startX; y = startY
-            }
-            windowManager.addView(floatView, params)
-
-            touchView = View(this).apply {
-                setWillNotDraw(true)
-                background = null
-            }
-            touchParams = WindowManager.LayoutParams(
-                hitRight - hitLeft, hitBottom - hitTop, type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSPARENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = startX + hitLeft
-                y = startY + hitTop
-                alpha = 0.01f  // nearly invisible — minimises Samsung SurfaceFlinger dim
-            }
-            windowManager.addView(touchView!!, touchParams!!)
+        // Touch window added FIRST (lower z-order) so the display window sits on top.
+        // The display window being topmost prevents Samsung's SurfaceFlinger from
+        // compositing-dimming it as a "covered" overlay layer.
+        touchView = View(this).apply {
+            setWillNotDraw(true)
+            background = null
         }
+        touchParams = WindowManager.LayoutParams(
+            hitRight - hitLeft, hitBottom - hitTop, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSPARENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = startX + hitLeft
+            y = startY + hitTop
+            alpha = 0.01f  // nearly invisible — reduces Samsung compositing artifact
+        }
+        windowManager.addView(touchView!!, touchParams!!)
+
+        // Display window added SECOND (higher z-order = topmost overlay).
+        // FLAG_NOT_TOUCHABLE: all touches pass through to the touch window below.
+        // alpha = 1.0f: explicitly full opacity, prevents Samsung from dimming the GIF.
+        params = WindowManager.LayoutParams(
+            petPx, petPx, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = startX; y = startY
+            alpha = 1.0f  // Samsung: explicit full opacity prevents dimming effect
+        }
+        windowManager.addView(floatView, params)
 
         loadGif(PetState.IDLE)
         setupTouchListener()
