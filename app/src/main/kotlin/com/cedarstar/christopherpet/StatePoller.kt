@@ -77,6 +77,16 @@ class StatePoller(
         }.start()
     }
 
+    fun sendShakeSignal() {
+        Thread {
+            try {
+                val body = "token=$PET_TOKEN&type=shake".toRequestBody("application/x-www-form-urlencoded".toMediaType())
+                val req = Request.Builder().url("$BASE_URL/thinking.php").post(body).build()
+                client.newCall(req).execute()
+            } catch (_: Exception) {}
+        }.start()
+    }
+
     private fun fetchState() {
         // Music/headphones detection is now handled by AppStateMonitor (Layer 3)
         // so we always fetch from server here without early-returning on isMusicActive
