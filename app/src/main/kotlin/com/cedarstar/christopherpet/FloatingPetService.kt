@@ -10,6 +10,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.Region
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -52,8 +53,12 @@ class FloatingPetService : Service() {
     private lateinit var bubbleView: TextView
     private var params: WindowManager.LayoutParams? = null
 
-    // Hit area bounds (pixels relative to floatView) — only touches here are handled;
-    // touches outside return false so they pass through to the app below.
+    // Touch window for API < 31: small overlay at the crab body hit area,
+    // avoids SurfaceFlinger compositing artifacts from overlapping display+touch windows.
+    private var touchView: View? = null
+    private var touchParams: WindowManager.LayoutParams? = null
+
+    // Hit area bounds (pixels relative to floatView top-left)
     private var hitLeft = 0
     private var hitTop = 0
     private var hitRight = 0
@@ -64,17 +69,24 @@ class FloatingPetService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // ── State layers (null = not active) ────────────────────────────────────
-    private var gestureState: PetState? = null       // Layer 0: temporary gesture
-    private var activityState: PetState? = null      // Layer 1: Christopher's activity
-    private var fatigueState: PetState? = null       // Layer 2: fatigue
-    private var musicState: PetState? = null         // Layer 3: 网易云 headphones (persistent)
-    private var phoneState: PetState? = null         // Layer 4: shopping/charging/battery
-    private var serverState: PetState = PetState.IDLE// Layer 5: server poll
+    // ── State layers ─────────────────────────────────────────────────────────
+    // Priority (highest first):
+    //   L1 gestureState  — tap/fling/shake reactions + idle-random animations (temporary)
+    //   L2 activityState — Christopher's .pet_activity (NOT blocked by fatigue)
+    //   L3 fatigueState  — persistent doze / collapse-sleep
+    //   L4 serverState   — typing / notification (from server poll)
+    //   L5 musicState    — 网易云 headphones
+    //   L5 phoneState    — shopping / charging / low battery
+    private var gestureState: PetState? = null
+    private var activityState: PetState? = null
+    private var fatigueState: PetState? = null
+    private var serverState: PetState = PetState.IDLE
+    private var musicState: PetState? = null
+    private var phoneState: PetState? = null
     private var currentFatigue = 0f
     private var lastTopDrive = "boredom"
 
-    // ── GIF cache (avoid redundant reloads) ──────────────────────────────────
+    // ── GIF cache ────────────────────────────────────────────────────────────
     private var currentGifState: PetState? = null
 
     // ── Touch state ──────────────────────────────────────────────────────────
@@ -85,7 +97,7 @@ class FloatingPetService : Service() {
     private var velocityTracker: VelocityTracker? = null
     private var lastTapTime = 0L
     private var tapCount = 0
-    private var isDragging = false  // true once finger moves >12dp from down position
+    private var isDragging = false
 
     // ── Walk / fling state ───────────────────────────────────────────────────
     private var isWalking = false
@@ -104,12 +116,10 @@ class FloatingPetService : Service() {
     // ── Runnables ────────────────────────────────────────────────────────────
     private val bubbleHideRunnable = Runnable { hideBubble() }
     private val gestureResetRunnable = Runnable { clearGesture() }
-
     private val tapResolutionRunnable = Runnable {
         resolveTap(tapCount)
         tapCount = 0
     }
-
     private val idleAnimRunnable = object : Runnable {
         override fun run() {
             triggerIdleRandom()
@@ -153,6 +163,10 @@ class FloatingPetService : Service() {
         if (::floatView.isInitialized) {
             try { windowManager.removeView(floatView) } catch (_: Exception) {}
         }
+        touchView?.let {
+            try { windowManager.removeView(it) } catch (_: Exception) {}
+            touchView = null
+        }
     }
 
     // ── Layout ───────────────────────────────────────────────────────────────
@@ -166,14 +180,11 @@ class FloatingPetService : Service() {
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
 
-        // Crab body is the lower 60% of the 140dp frame, with 20% side margins.
-        // Touches outside this zone return false → pass through to the app below.
-        // (single-window approach: no second transparent overlay that could dim the display)
-        val hitW = (petPx * 0.60f).toInt()
+        // Crab body: lower 60% of the 140dp frame, 20% side margins.
         hitLeft   = (petPx * 0.20f).toInt()
         hitTop    = (petPx * 0.40f).toInt()
-        hitRight  = hitLeft + hitW
-        hitBottom = petPx  // crab goes to bottom edge
+        hitRight  = hitLeft + (petPx * 0.60f).toInt()
+        hitBottom = petPx
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -182,38 +193,86 @@ class FloatingPetService : Service() {
         val startX = dm.widthPixels - petPx - (30 * dm.density).toInt()
         val startY = (100 * dm.density).toInt()
 
-        // Single window — no FLAG_NOT_TOUCHABLE.
-        // Touch events outside the crab body are rejected (return false) so they reach the app.
-        params = WindowManager.LayoutParams(
-            petPx, petPx, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // API 31+: single window + touchableRegion.
+            // Only the crab body rectangle receives touches; everything outside passes through
+            // to the app below. No second window = no SurfaceFlinger compositing artifact.
+            params = WindowManager.LayoutParams(
+                petPx, petPx, type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = startX; y = startY
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = startX; y = startY
+                touchableRegion = Region(hitLeft, hitTop, hitRight, hitBottom)
+            }
+            windowManager.addView(floatView, params)
+        } else {
+            // API < 31: display window (NOT_TOUCHABLE, shows GIF) + tiny touch window at
+            // the crab body position (nearly invisible, avoids Samsung dimming artifact).
+            params = WindowManager.LayoutParams(
+                petPx, petPx, type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = startX; y = startY
+            }
+            windowManager.addView(floatView, params)
+
+            touchView = View(this).apply {
+                setWillNotDraw(true)
+                background = null
+            }
+            touchParams = WindowManager.LayoutParams(
+                hitRight - hitLeft, hitBottom - hitTop, type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSPARENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = startX + hitLeft
+                y = startY + hitTop
+                alpha = 0.01f  // nearly invisible — minimises Samsung SurfaceFlinger dim
+            }
+            windowManager.addView(touchView!!, touchParams!!)
         }
-        windowManager.addView(floatView, params)
 
         loadGif(PetState.IDLE)
         setupTouchListener()
+    }
+
+    // Moves display window + touch window together.
+    private fun updatePosition(x: Int, y: Int) {
+        params!!.x = x
+        params!!.y = y
+        try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+        touchParams?.let { tp ->
+            tp.x = x + hitLeft
+            tp.y = y + hitTop
+            try { windowManager.updateViewLayout(touchView!!, tp) } catch (_: Exception) {}
+        }
     }
 
     // ── State resolution ─────────────────────────────────────────────────────
 
     private fun resolveDisplayState(): PetState {
         if (isDragging) return PetState.REACT_DRAG
-        gestureState?.let { return it }
-        activityState?.let { return it }
-        fatigueState?.let { return it }
+        gestureState?.let { return it }           // L1: gesture reactions + idle random
+        activityState?.let { return it }          // L2: Christopher's activity
+        fatigueState?.let { return it }           // L3: doze / collapse-sleep
         val srv = serverState
-        if (srv != PetState.IDLE) return srv
-        return musicState ?: phoneState ?: PetState.IDLE
+        if (srv != PetState.IDLE) return srv      // L4: typing / notification
+        return musicState ?: phoneState ?: PetState.IDLE  // L5: music / phone
     }
 
     private fun applyDisplayState() {
-        val state = resolveDisplayState()
-        loadGif(state)
+        loadGif(resolveDisplayState())
     }
 
     private fun clearGesture() {
@@ -255,18 +314,22 @@ class FloatingPetService : Service() {
         mainHandler.postDelayed(bubbleHideRunnable, 10_000)
         val bubblePick = when {
             currentFatigue >= FATIGUE_YAWN ->
-                listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
+                listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND,
+                       PetState.SWEEPING, PetState.IDLE_DOZE).random()
             lastTopDrive == "attachment" || lastTopDrive == "libido" ->
                 listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
             lastTopDrive == "curiosity" || lastTopDrive == "social" ->
                 listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
-            else ->
-                listOf(PetState.HAPPY, PetState.IDLE_LOOK, PetState.NOTIFICATION).random()
+            else ->  // boredom
+                listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND,
+                       PetState.SWEEPING, PetState.IDLE_DOZE).random()
         }
         setGesture(bubblePick, 2500)
     }
 
     private fun hideBubble() { bubbleView.visibility = View.GONE }
+
+    // ── Crabwalk ─────────────────────────────────────────────────────────────
 
     private fun crabwalkToRandom() {
         if (isWalking) return
@@ -284,9 +347,10 @@ class FloatingPetService : Service() {
         anim.duration = 1400
         anim.addUpdateListener { va ->
             val t = va.animatedFraction
-            params!!.x = (startX + (targetX - startX) * t).toInt()
-            params!!.y = (startY + (targetY - startY) * t).toInt()
-            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            updatePosition(
+                (startX + (targetX - startX) * t).toInt(),
+                (startY + (targetY - startY) * t).toInt()
+            )
         }
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -297,37 +361,35 @@ class FloatingPetService : Service() {
         anim.start()
     }
 
-    // ── Idle Random Animations ───────────────────────────────────────────────
+    // ── Idle Random Animations (L6) ───────────────────────────────────────────
 
     private fun triggerIdleRandom() {
         if (gestureState != null || isWalking) return
         val currentDisplay = resolveDisplayState()
         if (currentDisplay != PetState.IDLE && currentDisplay != PetState.IDLE_READING) return
 
-        // Avoid THINKING/ULTRATHINK — they're server-driven states too; picking them here
-        // causes the animation to appear "stuck" when server also returns thinking.
-        val pick = listOf(
-            PetState.IDLE_LOOK, PetState.IDLE_BUBBLE,
-            PetState.NOTIFICATION, PetState.HAPPY, PetState.COFFEE_HAND
-        ).random()
-        setGesture(pick, (3000L..6000L).random())
+        // Per spec: Level-6 pool includes thinking + ultrathink.
+        // Server no longer returns desire-based "thinking" state (pet_api.py fixed),
+        // so THINKING picked here won't get "stuck" when server also signals thinking.
+        val pool = listOf(
+            PetState.IDLE_LOOK, PetState.IDLE_LOOK,  // 2x weight — most common
+            PetState.IDLE_BUBBLE,
+            PetState.NOTIFICATION,
+            PetState.HAPPY,
+            PetState.COFFEE_HAND,
+            PetState.THINKING,       // clawd-thinking (spec: clawd-working-thinking)
+            PetState.ULTRATHINK,     // clawd-working-ultrathink
+        )
+        setGesture(pool.random(), (3000L..6000L).random())
     }
 
     // ── Touch / Fling ─────────────────────────────────────────────────────────
 
     private fun setupTouchListener() {
-        floatView.setOnTouchListener { _, event ->
-            val x = event.x.toInt()
-            val y = event.y.toInt()
-
-            // On first touch, reject if outside crab body — event passes to app below.
-            // Subsequent events in the sequence (MOVE/UP) follow whatever ACTION_DOWN decided.
-            if (event.action == MotionEvent.ACTION_DOWN) {
-                if (x < hitLeft || x > hitRight || y < hitTop || y > hitBottom) {
-                    return@setOnTouchListener false
-                }
-            }
-
+        // For API 31+: listener on floatView — touchableRegion limits which touches arrive.
+        // For API < 31: listener on touchView — it IS the crab body hit area.
+        val target: View = touchView ?: floatView
+        target.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params!!.x; initialY = params!!.y
@@ -340,7 +402,7 @@ class FloatingPetService : Service() {
                     shakeDir = 0; shakeReversals = 0
                     shakeStartTime = System.currentTimeMillis()
                     if (!isWalking) {
-                        val pulse = android.animation.ValueAnimator.ofFloat(1f, 0.87f, 1f)
+                        val pulse = ValueAnimator.ofFloat(1f, 0.87f, 1f)
                         pulse.duration = 110
                         pulse.addUpdateListener { a ->
                             val s = a.animatedValue as Float
@@ -360,9 +422,7 @@ class FloatingPetService : Service() {
                         applyDisplayState()
                     }
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-                        params!!.x = initialX + dx
-                        params!!.y = initialY + dy
-                        try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                        updatePosition(initialX + dx, initialY + dy)
                     }
                     val now = System.currentTimeMillis()
                     if (now - shakeStartTime < 3000) {
@@ -441,7 +501,6 @@ class FloatingPetService : Service() {
         val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
         val normVx = vx / speed
         val normVy = vy / speed
-
         val dist = dm.widthPixels * 1.5f
         val targetX = (startX + normVx * dist).toInt()
         val targetY = (startY + normVy * dist).toInt()
@@ -451,9 +510,10 @@ class FloatingPetService : Service() {
         flyAnim.duration = 300
         flyAnim.addUpdateListener { va ->
             val t = va.animatedFraction
-            params!!.x = (startX + (targetX - startX) * t).toInt()
-            params!!.y = (startY + (targetY - startY) * t).toInt()
-            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            updatePosition(
+                (startX + (targetX - startX) * t).toInt(),
+                (startY + (targetY - startY) * t).toInt()
+            )
         }
         flyAnim.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
@@ -470,7 +530,7 @@ class FloatingPetService : Service() {
         val maxX = dm.widthPixels - petPx - margin
         val returnX = (margin..maxX.coerceAtLeast(margin)).random()
         val returnY = ((80 * dm.density).toInt()..(300 * dm.density).toInt())
-            .random().coerceAtMost(dm.heightPixels - (PET_SIZE_DP * dm.density).toInt() - margin)
+            .random().coerceAtMost(dm.heightPixels - petPx - margin)
 
         isWalking = true
 
@@ -481,9 +541,10 @@ class FloatingPetService : Service() {
             bounceAnim.duration = 350
             bounceAnim.addUpdateListener { va ->
                 val t = va.animatedFraction
-                params!!.x = (startX + (returnX - startX) * t).toInt()
-                params!!.y = (startY + (returnY - startY) * t).toInt()
-                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                updatePosition(
+                    (startX + (returnX - startX) * t).toInt(),
+                    (startY + (returnY - startY) * t).toInt()
+                )
             }
             bounceAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -500,9 +561,10 @@ class FloatingPetService : Service() {
             crawlAnim.duration = 1800
             crawlAnim.addUpdateListener { va ->
                 val t = va.animatedFraction
-                params!!.x = (startX + (returnX - startX) * t).toInt()
-                params!!.y = (startY + (returnY - startY) * t).toInt()
-                try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                updatePosition(
+                    (startX + (returnX - startX) * t).toInt(),
+                    (startY + (returnY - startY) * t).toInt()
+                )
             }
             crawlAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -519,16 +581,13 @@ class FloatingPetService : Service() {
 
     private fun handleTap() {
         if (isWalking) return
-
         if (fatigueState != null) {
             setGesture(PetState.WAKE, 1500)
             return
         }
-
         val now = System.currentTimeMillis()
         if (now - lastTapTime < 400) tapCount++ else tapCount = 1
         lastTapTime = now
-
         mainHandler.removeCallbacks(tapResolutionRunnable)
         mainHandler.postDelayed(tapResolutionRunnable, 300)
     }
@@ -539,29 +598,30 @@ class FloatingPetService : Service() {
                 if (Math.random() < 0.20 && !isWalking) {
                     crabwalkToRandom()
                 } else {
-                    val options = listOf(
-                        PetState.REACT_ANNOYED, PetState.REACT_DOUBLE_JUMP,
-                        PetState.REACT_LEFT, PetState.REACT_RIGHT, PetState.IDLE_LOOK
+                    setGesture(
+                        listOf(PetState.REACT_ANNOYED, PetState.REACT_DOUBLE_JUMP,
+                               PetState.REACT_LEFT, PetState.REACT_RIGHT, PetState.IDLE_LOOK).random(),
+                        2500
                     )
-                    setGesture(options.random(), 2500)
                 }
             }
             2 -> {
                 val pick = when {
                     currentFatigue >= FATIGUE_YAWN ->
-                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND,
+                               PetState.SWEEPING, PetState.IDLE_DOZE).random()
                     lastTopDrive == "attachment" || lastTopDrive == "libido" ->
                         listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
                     lastTopDrive == "curiosity" || lastTopDrive == "social" ->
                         listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
                     else ->
-                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND,
+                               PetState.SWEEPING, PetState.IDLE_DOZE).random()
                 }
                 setGesture(pick, 2500)
             }
             3 -> {
-                val pick = if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY
-                setGesture(pick, 2000)
+                setGesture(if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY, 2000)
                 statePoller.sendThinkingOfYou { _ -> }
             }
             4 -> {
@@ -576,11 +636,11 @@ class FloatingPetService : Service() {
                 setGesture(pick, 2500)
             }
             5 -> {
-                val options = listOf(
-                    PetState.REACT_DOUBLE, PetState.NOTIFICATION_RETIRED,
-                    PetState.DIZZY, PetState.ERROR
+                setGesture(
+                    listOf(PetState.REACT_DOUBLE, PetState.NOTIFICATION_RETIRED,
+                           PetState.DIZZY, PetState.ERROR).random(),
+                    2000
                 )
-                setGesture(options.random(), 2000)
             }
         }
     }
@@ -631,9 +691,7 @@ class FloatingPetService : Service() {
                 phoneState = newPhoneState
                 if (gestureState == null && !isWalking) applyDisplayState()
             },
-            onScrollAlert = {
-                statePoller.sendScrollAlert()
-            }
+            onScrollAlert = { statePoller.sendScrollAlert() }
         )
         appMonitor.start()
     }
