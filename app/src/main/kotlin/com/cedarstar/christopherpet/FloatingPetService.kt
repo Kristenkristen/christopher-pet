@@ -35,9 +35,9 @@ class FloatingPetService : Service() {
         private const val BUBBLE_HEIGHT_DP = 80
 
         // Fatigue thresholds
-        private const val FATIGUE_YAWN  = 0.50f
-        private const val FATIGUE_DOZE  = 0.65f
-        private const val FATIGUE_SLEEP = 0.80f
+        private const val FATIGUE_YAWN  = 0.82f
+        private const val FATIGUE_DOZE  = 0.85f
+        private const val FATIGUE_SLEEP = 0.87f
 
         // Fling detection
         private const val FLING_MIN_VELOCITY = 1200f
@@ -92,6 +92,7 @@ class FloatingPetService : Service() {
     private var shakeReversals = 0 // direction reversals = shake count
     private var shakeStartTime = 0L
     private var shakeCooldownUntil = 0L
+    private val shakeTimestamps = mutableListOf<Long>()  // 3 shakes in 60s → CLAWD signal
 
     // ── Runnables ────────────────────────────────────────────────────────────
     private val bubbleHideRunnable = Runnable { hideBubble() }
@@ -107,12 +108,7 @@ class FloatingPetService : Service() {
     private val idleAnimRunnable = object : Runnable {
         override fun run() {
             triggerIdleRandom()
-            mainHandler.postDelayed(this, (20_000L..60_000L).random())
-        }
-    }
-    private val walkRunnable = object : Runnable {
-        override fun run() {
-            if (!isWalking) startWalk()
+            mainHandler.postDelayed(this, (45_000L..300_000L).random())
         }
     }
     private val yawnRunnable = Runnable {
@@ -131,8 +127,7 @@ class FloatingPetService : Service() {
         setupFloatingView()
         setupStatePoller()
         setupAppMonitor()
-        scheduleNextWalk()
-        mainHandler.postDelayed(idleAnimRunnable, 30_000L)
+        mainHandler.postDelayed(idleAnimRunnable, 45_000L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
@@ -187,9 +182,9 @@ class FloatingPetService : Service() {
     private fun resolveDisplayState(): PetState {
         gestureState?.let { return it }
         activityState?.let { return it }
-        // Typing/thinking from server punches through fatigue — always show when chatting
-        if (serverState == PetState.TYPING || serverState == PetState.THINKING) return serverState
-        return fatigueState ?: musicState ?: phoneState ?: serverState
+        // Fatigue state blocks typing/thinking animation (spec priority: fatigue > server poll)
+        fatigueState?.let { return it }
+        return musicState ?: phoneState ?: serverState
     }
 
     private fun applyDisplayState() {
@@ -230,7 +225,7 @@ class FloatingPetService : Service() {
         mainHandler.removeCallbacks(bubbleHideRunnable)
         bubbleView.text = text
         bubbleView.visibility = View.VISIBLE
-        mainHandler.postDelayed(bubbleHideRunnable, 6000)
+        mainHandler.postDelayed(bubbleHideRunnable, 10_000)
     }
 
     private fun hideBubble() { bubbleView.visibility = View.GONE }
@@ -242,45 +237,11 @@ class FloatingPetService : Service() {
         val currentDisplay = resolveDisplayState()
         if (currentDisplay != PetState.IDLE && currentDisplay != PetState.IDLE_READING) return
 
-        val pick = listOf(PetState.IDLE_LOOK, PetState.IDLE_BUBBLE, PetState.THINKING).random()
-        setGesture(pick, (3000L..5000L).random())
-    }
-
-    // ── Self-walking ──────────────────────────────────────────────────────────
-
-    private fun scheduleNextWalk() {
-        if (System.currentTimeMillis() < flingCooldownUntil) return
-        val delay = (45_000L..300_000L).random()
-        mainHandler.postDelayed(walkRunnable, delay)
-    }
-
-    private fun startWalk() {
-        if (gestureState != null) { scheduleNextWalk(); return }
-        val dm = resources.displayMetrics
-        val petPx = (PET_SIZE_DP * dm.density).toInt()
-        val margin = (16 * dm.density).toInt()
-        val maxX = dm.widthPixels - petPx - margin
-
-        val targetX = (margin..maxX).random()
-        isWalking = true
-        loadGif(PetState.CRABWALK)
-        statePoller.stop()
-
-        val anim = ValueAnimator.ofInt(params!!.x, targetX)
-        anim.duration = (1200L..2200L).random()
-        anim.addUpdateListener {
-            params!!.x = it.animatedValue as Int
-            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-        }
-        anim.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                isWalking = false
-                statePoller.start()
-                applyDisplayState()
-                scheduleNextWalk()
-            }
-        })
-        anim.start()
+        val pick = listOf(
+            PetState.IDLE_LOOK, PetState.IDLE_BUBBLE,
+            PetState.THINKING, PetState.ULTRATHINK, PetState.NOTIFICATION
+        ).random()
+        setGesture(pick, (3000L..6000L).random())
     }
 
     // ── Touch / Fling ─────────────────────────────────────────────────────────
@@ -294,7 +255,6 @@ class FloatingPetService : Service() {
                     if (!isTouchInHitArea(event.x, event.y)) {
                         return@setOnTouchListener false
                     }
-                    mainHandler.removeCallbacks(walkRunnable)
                     initialX = params!!.x; initialY = params!!.y
                     initialTouchX = event.rawX; initialTouchY = event.rawY
                     downLocalX = event.x; downLocalY = event.y
@@ -332,7 +292,14 @@ class FloatingPetService : Service() {
                                 shakeCooldownUntil = System.currentTimeMillis() + 5000L
                                 val pick = if (shakeReversals >= 6) PetState.REACT_ANNOYED else PetState.DIZZY
                                 setGesture(pick, 2200)
-                                statePoller.sendFlingSignal()  // notify Christopher he got shaken
+                                // Track 3 shake episodes in 60s → send CLAWD signal
+                                val nowMs = System.currentTimeMillis()
+                                shakeTimestamps.removeAll { nowMs - it > 60_000L }
+                                shakeTimestamps.add(nowMs)
+                                if (shakeTimestamps.size >= 3) {
+                                    shakeTimestamps.clear()
+                                    statePoller.sendShakeSignal()
+                                }
                                 shakeReversals = 0
                             }
                         }
@@ -358,11 +325,8 @@ class FloatingPetService : Service() {
 
                     if (dx < 30 && dy < 30 && isTouchInHitArea(downLocalX, downLocalY)) {
                         handleTap()
-                        scheduleNextWalk()
                     } else if (speed >= FLING_MIN_VELOCITY) {
                         handleFling(vx, vy)
-                    } else {
-                        scheduleNextWalk()
                     }
                     true
                 }
@@ -373,7 +337,6 @@ class FloatingPetService : Service() {
 
     private fun handleFling(vx: Float, vy: Float) {
         flingCooldownUntil = System.currentTimeMillis() + FLING_COOLDOWN_MS
-        mainHandler.removeCallbacks(walkRunnable)
 
         // Track 3-flings-in-1-min signal
         val now = System.currentTimeMillis()
@@ -444,7 +407,7 @@ class FloatingPetService : Service() {
                     setGesture(PetState.DIZZY, 2000)
                     mainHandler.postDelayed({
                         statePoller.start()
-                        mainHandler.postDelayed(walkRunnable, remaining + (45_000L..120_000L).random())
+                        mainHandler.postDelayed({}, 0L)
                     }, 2200)
                 }
             })
@@ -466,7 +429,7 @@ class FloatingPetService : Service() {
                     isWalking = false
                     statePoller.start()
                     applyDisplayState()
-                    mainHandler.postDelayed(walkRunnable, remaining + (45_000L..120_000L).random())
+                    mainHandler.postDelayed({}, 0L)
                 }
             })
             crawlAnim.start()
@@ -515,19 +478,18 @@ class FloatingPetService : Service() {
                 setGesture(pick, 2500)
             }
             3 -> {
-                // Random annoyance (swapped from old 5-tap)
-                val options = listOf(
-                    PetState.REACT_DOUBLE, PetState.DIZZY,
-                    PetState.ERROR, PetState.REACT_ANNOYED,
-                    PetState.NOTIFICATION_RETIRED
-                )
-                setGesture(options.random(), 2000)
-            }
-            5 -> {
-                // 想你 signal — sends [nudge:她在想你] to Christopher
+                // 想你 signal (triple tap) — sends [nudge:她在想你] to Christopher
                 val pick = if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY
                 setGesture(pick, 2000)
                 statePoller.sendThinkingOfYou { _ -> }
+            }
+            5 -> {
+                // Chaos / annoyance (quintuple tap) — must not conflate with triple
+                val options = listOf(
+                    PetState.REACT_DOUBLE, PetState.NOTIFICATION_RETIRED,
+                    PetState.DIZZY, PetState.ERROR
+                )
+                setGesture(options.random(), 2000)
             }
         }
     }
