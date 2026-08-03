@@ -47,16 +47,17 @@ class FloatingPetService : Service() {
     }
 
     private lateinit var windowManager: WindowManager
-    // Display window: shows the GIF + bubble, FLAG_NOT_TOUCHABLE (touches pass through)
     private lateinit var floatView: View
     private lateinit var gifView: GifImageView
     private lateinit var bubbleView: TextView
     private var params: WindowManager.LayoutParams? = null
-    // Touch window: invisible 84dp window centered on crab body, intercepts touches
-    private lateinit var touchView: View
-    private var touchParams: WindowManager.LayoutParams? = null
-    private var touchMarginPx = 0     // side margin (left/right offset from display window edge)
-    private var touchTopOffsetPx = 0  // top offset — larger than side margin so upper GIF area passes through
+
+    // Hit area bounds (pixels relative to floatView) — only touches here are handled;
+    // touches outside return false so they pass through to the app below.
+    private var hitLeft = 0
+    private var hitTop = 0
+    private var hitRight = 0
+    private var hitBottom = 0
 
     private lateinit var statePoller: StatePoller
     private lateinit var appMonitor: AppStateMonitor
@@ -94,18 +95,16 @@ class FloatingPetService : Service() {
     // ── Shake detection ──────────────────────────────────────────────────────
     private var shakeLastX = 0f
     private var shakeLastY = 0f
-    private var shakeDir = 0       // +1 or -1, tracks last movement direction
-    private var shakeReversals = 0 // direction reversals = shake count
+    private var shakeDir = 0
+    private var shakeReversals = 0
     private var shakeStartTime = 0L
     private var shakeCooldownUntil = 0L
-    private val shakeTimestamps = mutableListOf<Long>()  // 3 shakes in 60s → CLAWD signal
+    private val shakeTimestamps = mutableListOf<Long>()
 
     // ── Runnables ────────────────────────────────────────────────────────────
     private val bubbleHideRunnable = Runnable { hideBubble() }
     private val gestureResetRunnable = Runnable { clearGesture() }
 
-    // Single tap-resolution runnable — cancelled and rescheduled on each tap
-    // so only the LAST tap in a quick sequence triggers resolveTap
     private val tapResolutionRunnable = Runnable {
         resolveTap(tapCount)
         tapCount = 0
@@ -122,7 +121,6 @@ class FloatingPetService : Service() {
             if (currentFatigue >= FATIGUE_YAWN && fatigueState == null && !isWalking && gestureState == null) {
                 setGesture(PetState.IDLE_YAWN, 2500)
             }
-            // Keep scheduling random yawns while fatigue is high
             if (currentFatigue >= FATIGUE_YAWN) {
                 mainHandler.postDelayed(this, (25_000L..80_000L).random())
             }
@@ -155,9 +153,6 @@ class FloatingPetService : Service() {
         if (::floatView.isInitialized) {
             try { windowManager.removeView(floatView) } catch (_: Exception) {}
         }
-        if (::touchView.isInitialized) {
-            try { windowManager.removeView(touchView) } catch (_: Exception) {}
-        }
     }
 
     // ── Layout ───────────────────────────────────────────────────────────────
@@ -170,12 +165,15 @@ class FloatingPetService : Service() {
 
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
-        // Touch zone: 60% wide (20% side margins), lower 60% in height (40% top offset).
-        // The 40% top offset means the upper portion of the GIF (which is transparent anyway)
-        // never blocks the app below — only the crab body area captures touches.
-        val hitPx = (petPx * 0.60f).toInt()
-        touchMarginPx = (petPx * 0.20f).toInt()    // left/right side margin: 20%
-        touchTopOffsetPx = (petPx * 0.40f).toInt() // top offset: 40% (push zone down)
+
+        // Crab body is the lower 60% of the 140dp frame, with 20% side margins.
+        // Touches outside this zone return false → pass through to the app below.
+        // (single-window approach: no second transparent overlay that could dim the display)
+        val hitW = (petPx * 0.60f).toInt()
+        hitLeft   = (petPx * 0.20f).toInt()
+        hitTop    = (petPx * 0.40f).toInt()
+        hitRight  = hitLeft + hitW
+        hitBottom = petPx  // crab goes to bottom edge
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -184,11 +182,11 @@ class FloatingPetService : Service() {
         val startX = dm.widthPixels - petPx - (30 * dm.density).toInt()
         val startY = (100 * dm.density).toInt()
 
-        // Display window: full 140dp, NOT_TOUCHABLE so transparent edges never block the app below
+        // Single window — no FLAG_NOT_TOUCHABLE.
+        // Touch events outside the crab body are rejected (return false) so they reach the app.
         params = WindowManager.LayoutParams(
             petPx, petPx, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -197,47 +195,19 @@ class FloatingPetService : Service() {
         }
         windowManager.addView(floatView, params)
 
-        // Touch window: 84dp wide, 84dp tall, positioned at the crab body zone.
-        // PixelFormat.TRANSPARENT = zero visual footprint (no dimming of the display window below).
-        touchView = View(this).apply {
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            setWillNotDraw(true)
-        }
-        touchParams = WindowManager.LayoutParams(
-            hitPx, hitPx, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSPARENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = startX + touchMarginPx; y = startY + touchTopOffsetPx
-        }
-        windowManager.addView(touchView, touchParams)
-
         loadGif(PetState.IDLE)
         setupTouchListener()
-    }
-
-    // Keep touch window tracking the display window whenever position changes
-    private fun syncTouchWindow() {
-        val tp = touchParams ?: return
-        tp.x = params!!.x + touchMarginPx
-        tp.y = params!!.y + touchTopOffsetPx
-        try { windowManager.updateViewLayout(touchView, tp) } catch (_: Exception) {}
     }
 
     // ── State resolution ─────────────────────────────────────────────────────
 
     private fun resolveDisplayState(): PetState {
-        if (isDragging) return PetState.REACT_DRAG  // highest: show drag while held
+        if (isDragging) return PetState.REACT_DRAG
         gestureState?.let { return it }
         activityState?.let { return it }
-        // Fatigue (Layer 3) blocks server typing/notification (Layer 4)
         fatigueState?.let { return it }
-        // Layer 4: server state — overrides phone/music state unless it's just idle
         val srv = serverState
         if (srv != PetState.IDLE) return srv
-        // Layer 5: phone hardware state (music/shopping/charging/battery)
         return musicState ?: phoneState ?: PetState.IDLE
     }
 
@@ -254,7 +224,7 @@ class FloatingPetService : Service() {
     private fun setGesture(state: PetState, durationMs: Long) {
         mainHandler.removeCallbacks(gestureResetRunnable)
         gestureState = state
-        currentGifState = null  // force reload even if transitioning to the same state
+        currentGifState = null
         applyDisplayState()
         mainHandler.postDelayed(gestureResetRunnable, durationMs)
     }
@@ -268,7 +238,6 @@ class FloatingPetService : Service() {
         }
         if (fatigueState != oldFatigueState) applyDisplayState()
 
-        // Start yawn cycle if newly hitting threshold; the runnable reschedules itself
         if (currentFatigue >= FATIGUE_YAWN) {
             mainHandler.removeCallbacks(yawnRunnable)
             mainHandler.postDelayed(yawnRunnable, (15_000L..45_000L).random())
@@ -284,7 +253,6 @@ class FloatingPetService : Service() {
         bubbleView.text = text
         bubbleView.visibility = View.VISIBLE
         mainHandler.postDelayed(bubbleHideRunnable, 10_000)
-        // Spec: bubble triggers same animation as double-tap emotional state
         val bubblePick = when {
             currentFatigue >= FATIGUE_YAWN ->
                 listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
@@ -300,7 +268,6 @@ class FloatingPetService : Service() {
 
     private fun hideBubble() { bubbleView.visibility = View.GONE }
 
-    // Walk to a random on-screen position using crabwalk animation
     private fun crabwalkToRandom() {
         if (isWalking) return
         isWalking = true
@@ -320,7 +287,6 @@ class FloatingPetService : Service() {
             params!!.x = (startX + (targetX - startX) * t).toInt()
             params!!.y = (startY + (targetY - startY) * t).toInt()
             try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-            syncTouchWindow()
         }
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -338,9 +304,11 @@ class FloatingPetService : Service() {
         val currentDisplay = resolveDisplayState()
         if (currentDisplay != PetState.IDLE && currentDisplay != PetState.IDLE_READING) return
 
+        // Avoid THINKING/ULTRATHINK — they're server-driven states too; picking them here
+        // causes the animation to appear "stuck" when server also returns thinking.
         val pick = listOf(
             PetState.IDLE_LOOK, PetState.IDLE_BUBBLE,
-            PetState.THINKING, PetState.ULTRATHINK, PetState.NOTIFICATION
+            PetState.NOTIFICATION, PetState.HAPPY, PetState.COFFEE_HAND
         ).random()
         setGesture(pick, (3000L..6000L).random())
     }
@@ -348,24 +316,29 @@ class FloatingPetService : Service() {
     // ── Touch / Fling ─────────────────────────────────────────────────────────
 
     private fun setupTouchListener() {
-        // All touch handling is on the invisible touchView (84dp, centered on crab body).
-        // The display window (floatView) is FLAG_NOT_TOUCHABLE — touches on transparent
-        // edges of the 140dp window pass straight through to the app below.
-        touchView.setOnTouchListener { _, event ->
+        floatView.setOnTouchListener { _, event ->
+            val x = event.x.toInt()
+            val y = event.y.toInt()
+
+            // On first touch, reject if outside crab body — event passes to app below.
+            // Subsequent events in the sequence (MOVE/UP) follow whatever ACTION_DOWN decided.
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                if (x < hitLeft || x > hitRight || y < hitTop || y > hitBottom) {
+                    return@setOnTouchListener false
+                }
+            }
+
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    // touchView IS the hit zone — no hit-area check needed
                     initialX = params!!.x; initialY = params!!.y
                     initialTouchX = event.rawX; initialTouchY = event.rawY
                     isDragging = false
                     velocityTracker?.clear()
                     velocityTracker = VelocityTracker.obtain()
                     velocityTracker?.addMovement(event)
-                    // Reset shake tracking
                     shakeLastX = event.rawX; shakeLastY = event.rawY
                     shakeDir = 0; shakeReversals = 0
                     shakeStartTime = System.currentTimeMillis()
-                    // Scale pulse on display view for tactile feedback
                     if (!isWalking) {
                         val pulse = android.animation.ValueAnimator.ofFloat(1f, 0.87f, 1f)
                         pulse.duration = 110
@@ -381,20 +354,16 @@ class FloatingPetService : Service() {
                     velocityTracker?.addMovement(event)
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
-                    // Enter drag mode once finger moves >20px — show react-drag
                     if (!isDragging && (Math.abs(dx) > 20 || Math.abs(dy) > 20) && !isWalking) {
                         isDragging = true
                         currentGifState = null
                         applyDisplayState()
                     }
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-                        // START gravity: rightward drag increases x
                         params!!.x = initialX + dx
                         params!!.y = initialY + dy
                         try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-                        syncTouchWindow()
                     }
-                    // Shake detection: count direction reversals within a short window
                     val now = System.currentTimeMillis()
                     if (now - shakeStartTime < 3000) {
                         val mdx = event.rawX - shakeLastX
@@ -409,7 +378,6 @@ class FloatingPetService : Service() {
                                 shakeCooldownUntil = System.currentTimeMillis() + 5000L
                                 val pick = if (shakeReversals >= 6) PetState.REACT_ANNOYED else PetState.DIZZY
                                 setGesture(pick, 2200)
-                                // Track 3 shake episodes in 60s → send CLAWD signal
                                 val nowMs = System.currentTimeMillis()
                                 shakeTimestamps.removeAll { nowMs - it > 60_000L }
                                 shakeTimestamps.add(nowMs)
@@ -421,7 +389,6 @@ class FloatingPetService : Service() {
                             }
                         }
                     } else {
-                        // Reset after 3s of continuous drag
                         shakeLastX = event.rawX; shakeLastY = event.rawY
                         shakeDir = 0; shakeReversals = 0
                         shakeStartTime = now
@@ -435,7 +402,6 @@ class FloatingPetService : Service() {
                     val vy = velocityTracker?.yVelocity ?: 0f
                     velocityTracker?.recycle(); velocityTracker = null
 
-                    // End drag mode — restore proper animation
                     val wasDragging = isDragging
                     isDragging = false
                     if (wasDragging) applyDisplayState()
@@ -458,10 +424,9 @@ class FloatingPetService : Service() {
     }
 
     private fun handleFling(vx: Float, vy: Float) {
-        isWalking = true  // lock immediately so re-entrant flings are blocked during fly-off
+        isWalking = true
         flingCooldownUntil = System.currentTimeMillis() + FLING_COOLDOWN_MS
 
-        // Track 3-flings-in-1-min signal
         val now = System.currentTimeMillis()
         flingTimestamps.removeAll { now - it > FLING_SIGNAL_WINDOW_MS }
         flingTimestamps.add(now)
@@ -470,7 +435,6 @@ class FloatingPetService : Service() {
             statePoller.sendFlingSignal()
         }
 
-        // Fly off screen in fling direction
         val dm = resources.displayMetrics
         val startX = params!!.x
         val startY = params!!.y
@@ -478,7 +442,6 @@ class FloatingPetService : Service() {
         val normVx = vx / speed
         val normVy = vy / speed
 
-        // Move 1.5× screen width in fling direction to guarantee off-screen
         val dist = dm.widthPixels * 1.5f
         val targetX = (startX + normVx * dist).toInt()
         val targetY = (startY + normVy * dist).toInt()
@@ -491,11 +454,9 @@ class FloatingPetService : Service() {
             params!!.x = (startX + (targetX - startX) * t).toInt()
             params!!.y = (startY + (targetY - startY) * t).toInt()
             try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-            syncTouchWindow()
         }
         flyAnim.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
-                // Brief pause off-screen, then bounce or crawl back
                 mainHandler.postDelayed({ bounceOrCrawlBack() }, 300)
             }
         })
@@ -506,7 +467,6 @@ class FloatingPetService : Service() {
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
         val margin = (16 * dm.density).toInt()
-        // START gravity: x is distance from left edge. Keep pet on-screen.
         val maxX = dm.widthPixels - petPx - margin
         val returnX = (margin..maxX.coerceAtLeast(margin)).random()
         val returnY = ((80 * dm.density).toInt()..(300 * dm.density).toInt())
@@ -515,7 +475,6 @@ class FloatingPetService : Service() {
         isWalking = true
 
         if (Math.random() < 0.5) {
-            // 50%: fast teleport back + dizzy
             val startX = params!!.x; val startY = params!!.y
             loadGif(PetState.DIZZY)
             val bounceAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -525,21 +484,16 @@ class FloatingPetService : Service() {
                 params!!.x = (startX + (returnX - startX) * t).toInt()
                 params!!.y = (startY + (returnY - startY) * t).toInt()
                 try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-                syncTouchWindow()
             }
             bounceAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     isWalking = false
                     setGesture(PetState.DIZZY, 2000)
-                    mainHandler.postDelayed({
-                        statePoller.start()
-                        mainHandler.postDelayed({}, 0L)
-                    }, 2200)
+                    mainHandler.postDelayed({ statePoller.start() }, 2200)
                 }
             })
             bounceAnim.start()
         } else {
-            // 50%: crabwalk back
             loadGif(PetState.CRABWALK)
             val startX = params!!.x; val startY = params!!.y
             val crawlAnim = ValueAnimator.ofFloat(0f, 1f)
@@ -549,14 +503,12 @@ class FloatingPetService : Service() {
                 params!!.x = (startX + (returnX - startX) * t).toInt()
                 params!!.y = (startY + (returnY - startY) * t).toInt()
                 try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
-                syncTouchWindow()
             }
             crawlAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     isWalking = false
                     statePoller.start()
                     applyDisplayState()
-                    mainHandler.postDelayed({}, 0L)
                 }
             })
             crawlAnim.start()
@@ -568,7 +520,6 @@ class FloatingPetService : Service() {
     private fun handleTap() {
         if (isWalking) return
 
-        // Tap during any sleep state → brief wake, then return to sleep automatically
         if (fatigueState != null) {
             setGesture(PetState.WAKE, 1500)
             return
@@ -578,7 +529,6 @@ class FloatingPetService : Service() {
         if (now - lastTapTime < 400) tapCount++ else tapCount = 1
         lastTapTime = now
 
-        // Cancel any pending tap resolution and reschedule — only the LAST tap fires
         mainHandler.removeCallbacks(tapResolutionRunnable)
         mainHandler.postDelayed(tapResolutionRunnable, 300)
     }
@@ -586,7 +536,6 @@ class FloatingPetService : Service() {
     private fun resolveTap(count: Int) {
         when (count) {
             1 -> {
-                // 20% chance: crabwalk to a random position
                 if (Math.random() < 0.20 && !isWalking) {
                     crabwalkToRandom()
                 } else {
@@ -598,7 +547,6 @@ class FloatingPetService : Service() {
                 }
             }
             2 -> {
-                // Spec: fatigue always dominates in pet (even over libido, unlike Christopher's system)
                 val pick = when {
                     currentFatigue >= FATIGUE_YAWN ->
                         listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
@@ -612,13 +560,11 @@ class FloatingPetService : Service() {
                 setGesture(pick, 2500)
             }
             3 -> {
-                // 想你 signal (triple tap) — sends [nudge:她在想你] to Christopher
                 val pick = if (Math.random() < 0.5) PetState.AEGYO_SHY else PetState.HAPPY
                 setGesture(pick, 2000)
                 statePoller.sendThinkingOfYou { _ -> }
             }
             4 -> {
-                // 4 taps: treat same as double (drive-based reaction)
                 val pick = when (lastTopDrive) {
                     "attachment", "libido" ->
                         listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
@@ -630,7 +576,6 @@ class FloatingPetService : Service() {
                 setGesture(pick, 2500)
             }
             5 -> {
-                // Chaos / annoyance (quintuple tap) — must not conflate with triple
                 val options = listOf(
                     PetState.REACT_DOUBLE, PetState.NOTIFICATION_RETIRED,
                     PetState.DIZZY, PetState.ERROR
@@ -687,7 +632,6 @@ class FloatingPetService : Service() {
                 if (gestureState == null && !isWalking) applyDisplayState()
             },
             onScrollAlert = {
-                // 抖音/小红书 cumulative 1h: send bubble trigger to server
                 statePoller.sendScrollAlert()
             }
         )
