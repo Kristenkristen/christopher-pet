@@ -47,14 +47,20 @@ class FloatingPetService : Service() {
     }
 
     private lateinit var windowManager: WindowManager
+    // Display window: shows the GIF + bubble, FLAG_NOT_TOUCHABLE (touches pass through)
     private lateinit var floatView: View
     private lateinit var gifView: GifImageView
     private lateinit var bubbleView: TextView
+    private var params: WindowManager.LayoutParams? = null
+    // Touch window: invisible 84dp window centered on crab body, intercepts touches
+    private lateinit var touchView: View
+    private var touchParams: WindowManager.LayoutParams? = null
+    private var touchMarginPx = 0  // margin from display window edge to touch window edge
+
     private lateinit var statePoller: StatePoller
     private lateinit var appMonitor: AppStateMonitor
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var params: WindowManager.LayoutParams? = null
 
     // ── State layers (null = not active) ────────────────────────────────────
     private var gestureState: PetState? = null       // Layer 0: temporary gesture
@@ -74,8 +80,6 @@ class FloatingPetService : Service() {
     private var initialY = 0
     private var initialTouchX = 0f
     private var initialTouchY = 0f
-    private var downLocalX = 0f    // view-local X at ACTION_DOWN, for hit-area check
-    private var downLocalY = 0f    // view-local Y at ACTION_DOWN, for hit-area check
     private var velocityTracker: VelocityTracker? = null
     private var lastTapTime = 0L
     private var tapCount = 0
@@ -150,6 +154,9 @@ class FloatingPetService : Service() {
         if (::floatView.isInitialized) {
             try { windowManager.removeView(floatView) } catch (_: Exception) {}
         }
+        if (::touchView.isInitialized) {
+            try { windowManager.removeView(touchView) } catch (_: Exception) {}
+        }
     }
 
     // ── Layout ───────────────────────────────────────────────────────────────
@@ -162,61 +169,53 @@ class FloatingPetService : Service() {
 
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
+        // Touch zone: center 60% of the pet = 84dp (20% margin each side)
+        val hitPx = (petPx * 0.60f).toInt()
+        touchMarginPx = (petPx * 0.20f).toInt()
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
+        val startX = dm.widthPixels - petPx - (30 * dm.density).toInt()
+        val startY = (100 * dm.density).toInt()
+
+        // Display window: full 140dp, NOT_TOUCHABLE so transparent edges never block the app below
         params = WindowManager.LayoutParams(
             petPx, petPx, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = startX; y = startY
+        }
+        windowManager.addView(floatView, params)
+
+        // Touch window: 84dp, positioned over the crab body (center of the 140dp display window)
+        touchView = View(this)
+        touchParams = WindowManager.LayoutParams(
+            hitPx, hitPx, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // Initial position: 30dp from right edge
-            x = dm.widthPixels - petPx - (30 * dm.density).toInt()
-            y = (100 * dm.density).toInt()
+            x = startX + touchMarginPx; y = startY + touchMarginPx
         }
+        windowManager.addView(touchView, touchParams)
 
-        windowManager.addView(floatView, params)
         loadGif(PetState.IDLE)
         setupTouchListener()
-        setupTouchableRegion()
     }
 
-    // Tell the OS that only the center 60% of the window receives touches.
-    // Touches outside this region pass through to the app below.
-    // addOnComputeInternalInsetsListener is a hidden API, so we call it via reflection
-    // to avoid compile errors while still using it at runtime.
-    @Suppress("SwallowedException")
-    private fun setupTouchableRegion() {
-        try {
-            val vto = floatView.viewTreeObserver
-            val listenerClass = Class.forName(
-                "android.view.ViewTreeObserver\$OnComputeInternalInsetsListener"
-            )
-            val proxy = java.lang.reflect.Proxy.newProxyInstance(
-                listenerClass.classLoader, arrayOf(listenerClass)
-            ) { _, _, args ->
-                val info = args?.firstOrNull() ?: return@newProxyInstance null
-                val w = floatView.width; val h = floatView.height
-                if (w > 0 && h > 0) {
-                    val m = (w * 0.20f).toInt()
-                    @Suppress("UNCHECKED_CAST")
-                    val region = info.javaClass.getField("touchableRegion")
-                        .get(info) as android.graphics.Region
-                    region.set(m, m, w - m, h - m)
-                    try {
-                        info.javaClass.getMethod("setTouchableInsets", Int::class.java)
-                            .invoke(info, 3) // TOUCHABLE_INSETS_REGION = 3
-                    } catch (_: Exception) {}
-                }
-                null
-            }
-            vto.javaClass.getMethod("addOnComputeInternalInsetsListener", listenerClass)
-                .invoke(vto, proxy)
-        } catch (_: Exception) {}
+    // Keep touch window centered on the display window whenever position changes
+    private fun syncTouchWindow() {
+        val tp = touchParams ?: return
+        tp.x = params!!.x + touchMarginPx
+        tp.y = params!!.y + touchMarginPx
+        try { windowManager.updateViewLayout(touchView, tp) } catch (_: Exception) {}
     }
 
     // ── State resolution ─────────────────────────────────────────────────────
@@ -313,6 +312,7 @@ class FloatingPetService : Service() {
             params!!.x = (startX + (targetX - startX) * t).toInt()
             params!!.y = (startY + (targetY - startY) * t).toInt()
             try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            syncTouchWindow()
         }
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -340,17 +340,15 @@ class FloatingPetService : Service() {
     // ── Touch / Fling ─────────────────────────────────────────────────────────
 
     private fun setupTouchListener() {
-        floatView.setOnTouchListener { _, event ->
+        // All touch handling is on the invisible touchView (84dp, centered on crab body).
+        // The display window (floatView) is FLAG_NOT_TOUCHABLE — touches on transparent
+        // edges of the 140dp window pass straight through to the app below.
+        touchView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    // Pass through if touch is outside the crab hit zone — lets user tap
-                    // through the transparent parts of the overlay to the app below.
-                    if (!isTouchInHitArea(event.x, event.y)) {
-                        return@setOnTouchListener false
-                    }
+                    // touchView IS the hit zone — no hit-area check needed
                     initialX = params!!.x; initialY = params!!.y
                     initialTouchX = event.rawX; initialTouchY = event.rawY
-                    downLocalX = event.x; downLocalY = event.y
                     isDragging = false
                     velocityTracker?.clear()
                     velocityTracker = VelocityTracker.obtain()
@@ -359,7 +357,7 @@ class FloatingPetService : Service() {
                     shakeLastX = event.rawX; shakeLastY = event.rawY
                     shakeDir = 0; shakeReversals = 0
                     shakeStartTime = System.currentTimeMillis()
-                    // Immediate tactile feedback — quick scale pulse so she knows the touch landed
+                    // Scale pulse on display view for tactile feedback
                     if (!isWalking) {
                         val pulse = android.animation.ValueAnimator.ofFloat(1f, 0.87f, 1f)
                         pulse.duration = 110
@@ -386,6 +384,7 @@ class FloatingPetService : Service() {
                         params!!.x = initialX + dx
                         params!!.y = initialY + dy
                         try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                        syncTouchWindow()
                     }
                     // Shake detection: count direction reversals within a short window
                     val now = System.currentTimeMillis()
@@ -424,7 +423,6 @@ class FloatingPetService : Service() {
                 MotionEvent.ACTION_UP -> {
                     velocityTracker?.addMovement(event)
                     velocityTracker?.computeCurrentVelocity(1000)
-                    // START gravity: positive vx = moving right (increasing x)
                     val vx = velocityTracker?.xVelocity ?: 0f
                     val vy = velocityTracker?.yVelocity ?: 0f
                     velocityTracker?.recycle(); velocityTracker = null
@@ -439,7 +437,7 @@ class FloatingPetService : Service() {
                     val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
                     val tapSlopPx = (20 * resources.displayMetrics.density)
 
-                    if (dx < tapSlopPx && dy < tapSlopPx && isTouchInHitArea(downLocalX, downLocalY)) {
+                    if (dx < tapSlopPx && dy < tapSlopPx) {
                         handleTap()
                     } else if (speed >= FLING_MIN_VELOCITY && !isWalking) {
                         handleFling(vx, vy)
@@ -485,6 +483,7 @@ class FloatingPetService : Service() {
             params!!.x = (startX + (targetX - startX) * t).toInt()
             params!!.y = (startY + (targetY - startY) * t).toInt()
             try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+            syncTouchWindow()
         }
         flyAnim.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
@@ -518,6 +517,7 @@ class FloatingPetService : Service() {
                 params!!.x = (startX + (returnX - startX) * t).toInt()
                 params!!.y = (startY + (returnY - startY) * t).toInt()
                 try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                syncTouchWindow()
             }
             bounceAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -541,6 +541,7 @@ class FloatingPetService : Service() {
                 params!!.x = (startX + (returnX - startX) * t).toInt()
                 params!!.y = (startY + (returnY - startY) * t).toInt()
                 try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                syncTouchWindow()
             }
             crawlAnim.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -629,18 +630,6 @@ class FloatingPetService : Service() {
                 setGesture(options.random(), 2000)
             }
         }
-    }
-
-    // Window is exactly 140×140dp — same as the pet. Entire window is the hit area.
-    // Spec: crab body ≈ center 1/3 of animation; transparent edges pass through to app below.
-    // We use center 60%×60% (≈ 36% area) so the hit zone is comfortably tappable.
-    private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
-        val w = floatView.width.toFloat()
-        val h = floatView.height.toFloat()
-        if (w <= 0f || h <= 0f) return true
-        val margin = 0.20f  // 20% transparent margin on each side
-        return localX >= w * margin && localX <= w * (1f - margin) &&
-               localY >= h * margin && localY <= h * (1f - margin)
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
