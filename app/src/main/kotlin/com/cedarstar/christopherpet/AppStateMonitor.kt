@@ -19,9 +19,6 @@ class AppStateMonitor(
     companion object {
         private const val LOW_BATTERY_THRESHOLD = 19
         private const val APP_POLL_INTERVAL_MS = 5000L
-        private const val NETEASE_PACKAGE = "com.netease.cloudmusic"
-        // 网易云 lives in background for hours — use 30-minute window to detect it
-        private const val MUSIC_WINDOW_MS = 30 * 60 * 1000L
         // Shopping apps: only relevant if actively in foreground (60s window)
         private const val PHONE_WINDOW_MS = 60_000L
         // Scroll alert: fire once per cumulative hour of Douyin/Xiaohongshu usage today
@@ -82,13 +79,8 @@ class AppStateMonitor(
         val charging = isCharging
         val batt = batteryLevel
         Thread {
-            // Layer 3: music — isMusicActive is the primary signal; package check uses wide window
-            // since 网易云 stays in background indefinitely while playing
-            val musicActive = isMusicActive()
-            val newMusicState: PetState? = if (musicActive) {
-                val pkg = getForegroundPackage(MUSIC_WINDOW_MS)
-                if (pkg == NETEASE_PACKAGE) PetState.HEADPHONES else null
-            } else null
+            // Layer 3: music — any music playing triggers headphones animation
+            val newMusicState: PetState? = if (isMusicActive()) PetState.HEADPHONES else null
 
             // Layer 4: phone hardware / shopping — short window (only if actively foregrounded)
             val newPhoneState: PetState? = when {
