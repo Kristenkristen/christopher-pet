@@ -153,9 +153,9 @@ class FloatingPetService : Service() {
         gifView = floatView.findViewById(R.id.gifView)
         bubbleView = floatView.findViewById(R.id.bubbleText)
 
-        val density = resources.displayMetrics.density
-        val petPx = (PET_SIZE_DP * density).toInt()
-        val totalH = ((PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density).toInt()
+        val dm = resources.displayMetrics
+        val petPx = (PET_SIZE_DP * dm.density).toInt()
+        val totalH = ((PET_SIZE_DP + BUBBLE_HEIGHT_DP) * dm.density).toInt()
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -163,13 +163,14 @@ class FloatingPetService : Service() {
 
         params = WindowManager.LayoutParams(
             petPx, totalH, type,
-            // FLAG_LAYOUT_NO_LIMITS lets the pet fly off-screen during flings
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = 30; y = 100
+            gravity = Gravity.TOP or Gravity.START
+            // Initial position: 30dp from right edge
+            x = dm.widthPixels - petPx - (30 * dm.density).toInt()
+            y = (100 * dm.density).toInt()
         }
 
         windowManager.addView(floatView, params)
@@ -272,8 +273,8 @@ class FloatingPetService : Service() {
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-                        // END gravity: rightward drag decreases x (distance from right edge)
-                        params!!.x = initialX - dx
+                        // START gravity: rightward drag increases x
+                        params!!.x = initialX + dx
                         params!!.y = initialY + dy
                         try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
                     }
@@ -314,8 +315,8 @@ class FloatingPetService : Service() {
                 MotionEvent.ACTION_UP -> {
                     velocityTracker?.addMovement(event)
                     velocityTracker?.computeCurrentVelocity(1000)
-                    // END gravity: negate xVelocity so positive = moving toward right edge (smaller x)
-                    val vx = -(velocityTracker?.xVelocity ?: 0f)
+                    // START gravity: positive vx = moving right (increasing x)
+                    val vx = velocityTracker?.xVelocity ?: 0f
                     val vy = velocityTracker?.yVelocity ?: 0f
                     velocityTracker?.recycle(); velocityTracker = null
 
@@ -383,12 +384,13 @@ class FloatingPetService : Service() {
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
         val margin = (16 * dm.density).toInt()
+        // START gravity: x is distance from left edge. Keep pet on-screen.
         val maxX = dm.widthPixels - petPx - margin
-        val returnX = (margin..maxX).random()
-        val returnY = ((80 * dm.density).toInt()..(220 * dm.density).toInt()).random()
+        val returnX = (margin..maxX.coerceAtLeast(margin)).random()
+        val returnY = ((80 * dm.density).toInt()..(300 * dm.density).toInt())
+            .random().coerceAtMost(dm.heightPixels - (PET_SIZE_DP * dm.density).toInt() - margin)
 
         isWalking = true
-        val remaining = maxOf(0L, flingCooldownUntil - System.currentTimeMillis())
 
         if (Math.random() < 0.5) {
             // 50%: fast teleport back + dizzy
@@ -507,19 +509,15 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Tap hitbox: 50×50dp centered on the crab body (~1/3 of the 140dp GIF width).
-    // Touches OUTSIDE this zone return false in ACTION_DOWN, passing through to the app below.
-    // Window: 140×220dp. GIF (140×140dp) renders centered at (70dp, 110dp) from window top-left.
+    // Hit zone: the 140×140dp GIF area, centered in the 140×220dp window.
+    // Touches in the top/bottom 40dp (transparent bubble margins) pass through to the app below.
     private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
         val density = resources.displayMetrics.density
-        val petPx = PET_SIZE_DP * density
-        val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density
-        val petTop = (totalH - petPx) / 2f
-        val centerX = petPx / 2f
-        val centerY = petTop + petPx / 2f
-        val halfHit = 25 * density  // 25dp radius → 50×50dp hit zone
-        return localX >= centerX - halfHit && localX <= centerX + halfHit &&
-               localY >= centerY - halfHit && localY <= centerY + halfHit
+        val petPx = PET_SIZE_DP * density   // 140dp
+        val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density  // 220dp
+        val petTop = (totalH - petPx) / 2f  // 40dp margin
+        return localY >= petTop && localY <= petTop + petPx
+        // Full width is tappable — no X restriction
     }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
