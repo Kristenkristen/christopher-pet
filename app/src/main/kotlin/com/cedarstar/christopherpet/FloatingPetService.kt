@@ -640,6 +640,10 @@ class FloatingPetService : Service() {
             onPhoneStateChanged = { newPhoneState ->
                 phoneState = newPhoneState
                 if (gestureState == null && !isWalking) applyDisplayState()
+            },
+            onScrollAlert = {
+                // 抖音/小红书 cumulative 1h: send bubble trigger to server
+                statePoller.sendScrollAlert()
             }
         )
         appMonitor.start()
