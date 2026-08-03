@@ -110,7 +110,8 @@ class StatePoller(
 
                 val state = json.getString("state").toPetState()
                 val actStr = json.optString("activity_state", "")
-                val activity = if (actStr.isNotBlank()) actStr.toPetState() else null
+                // optString returns "null" (string) when JSON value is null — filter that out
+                val activity = if (actStr.isNotBlank() && actStr != "null") actStr.toPetState() else null
                 val fatigue = json.optDouble("fatigue", 0.0).toFloat()
                 val topDrive = json.optString("top_drive", "boredom")
                 val bubble = json.optString("bubble", "")
