@@ -155,14 +155,13 @@ class FloatingPetService : Service() {
 
         val dm = resources.displayMetrics
         val petPx = (PET_SIZE_DP * dm.density).toInt()
-        val totalH = ((PET_SIZE_DP + BUBBLE_HEIGHT_DP) * dm.density).toInt()
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
         params = WindowManager.LayoutParams(
-            petPx, totalH, type,
+            petPx, petPx, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -521,16 +520,8 @@ class FloatingPetService : Service() {
         }
     }
 
-    // Hit zone: the 140×140dp GIF area, centered in the 140×220dp window.
-    // Touches in the top/bottom 40dp (transparent bubble margins) pass through to the app below.
-    private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
-        val density = resources.displayMetrics.density
-        val petPx = PET_SIZE_DP * density   // 140dp
-        val totalH = (PET_SIZE_DP + BUBBLE_HEIGHT_DP) * density  // 220dp
-        val petTop = (totalH - petPx) / 2f  // 40dp margin
-        return localY >= petTop && localY <= petTop + petPx
-        // Full width is tappable — no X restriction
-    }
+    // Window is exactly 140×140dp — same as the pet. Entire window is the hit area.
+    private fun isTouchInHitArea(localX: Float, localY: Float): Boolean = true
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
 
