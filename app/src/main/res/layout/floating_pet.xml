@@ -15,14 +15,15 @@
         android:id="@+id/bubbleText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
-        android:layout_margin="8dp"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="6dp"
+        android:layout_marginStart="6dp"
         android:background="@drawable/bubble_bg"
         android:paddingHorizontal="10dp"
         android:paddingVertical="6dp"
         android:textSize="11sp"
         android:textColor="#333333"
-        android:maxWidth="180dp"
+        android:maxWidth="120dp"
         android:visibility="gone"/>
 
 </FrameLayout>
