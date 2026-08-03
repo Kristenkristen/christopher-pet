@@ -187,27 +187,36 @@ class FloatingPetService : Service() {
 
     // Tell the OS that only the center 60% of the window receives touches.
     // Touches outside this region pass through to the app below.
-    // Uses ViewTreeObserver.InternalInsetsInfo which handles this at the OS level
-    // (returning false from the touch listener alone is not enough for TYPE_APPLICATION_OVERLAY).
+    // addOnComputeInternalInsetsListener is a hidden API, so we call it via reflection
+    // to avoid compile errors while still using it at runtime.
+    @Suppress("SwallowedException")
     private fun setupTouchableRegion() {
-        floatView.viewTreeObserver.addOnComputeInternalInsetsListener { info ->
-            val w = floatView.width
-            val h = floatView.height
-            if (w <= 0 || h <= 0) return@addOnComputeInternalInsetsListener
-            val margin = (w * 0.20f).toInt()
-            info.touchableRegion.set(margin, margin, w - margin, h - margin)
-            // TOUCHABLE_INSETS_REGION = 3 — hidden constant, accessed via reflection
-            try {
-                info.javaClass.getMethod("setTouchableInsets", Int::class.java)
-                    .invoke(info, 3)
-            } catch (_: Exception) {
-                try {
-                    info.javaClass.getDeclaredField("mTouchableInsets")
-                        .apply { isAccessible = true }
-                        .setInt(info, 3)
-                } catch (_: Exception) {}
+        try {
+            val vto = floatView.viewTreeObserver
+            val listenerClass = Class.forName(
+                "android.view.ViewTreeObserver\$OnComputeInternalInsetsListener"
+            )
+            val proxy = java.lang.reflect.Proxy.newProxyInstance(
+                listenerClass.classLoader, arrayOf(listenerClass)
+            ) { _, _, args ->
+                val info = args?.firstOrNull() ?: return@newProxyInstance null
+                val w = floatView.width; val h = floatView.height
+                if (w > 0 && h > 0) {
+                    val m = (w * 0.20f).toInt()
+                    @Suppress("UNCHECKED_CAST")
+                    val region = info.javaClass.getField("touchableRegion")
+                        .get(info) as android.graphics.Region
+                    region.set(m, m, w - m, h - m)
+                    try {
+                        info.javaClass.getMethod("setTouchableInsets", Int::class.java)
+                            .invoke(info, 3) // TOUCHABLE_INSETS_REGION = 3
+                    } catch (_: Exception) {}
+                }
+                null
             }
-        }
+            vto.javaClass.getMethod("addOnComputeInternalInsetsListener", listenerClass)
+                .invoke(vto, proxy)
+        } catch (_: Exception) {}
     }
 
     // ── State resolution ─────────────────────────────────────────────────────
