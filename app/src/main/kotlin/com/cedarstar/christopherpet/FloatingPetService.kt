@@ -79,6 +79,7 @@ class FloatingPetService : Service() {
     private var velocityTracker: VelocityTracker? = null
     private var lastTapTime = 0L
     private var tapCount = 0
+    private var isDragging = false  // true once finger moves >12dp from down position
 
     // ── Walk / fling state ───────────────────────────────────────────────────
     private var isWalking = false
@@ -111,9 +112,15 @@ class FloatingPetService : Service() {
             mainHandler.postDelayed(this, (45_000L..300_000L).random())
         }
     }
-    private val yawnRunnable = Runnable {
-        if (!isWalking && fatigueState == null && currentFatigue >= FATIGUE_YAWN) {
-            setGesture(PetState.IDLE_YAWN, 2500)
+    private val yawnRunnable = object : Runnable {
+        override fun run() {
+            if (currentFatigue >= FATIGUE_YAWN && fatigueState == null && !isWalking && gestureState == null) {
+                setGesture(PetState.IDLE_YAWN, 2500)
+            }
+            // Keep scheduling random yawns while fatigue is high
+            if (currentFatigue >= FATIGUE_YAWN) {
+                mainHandler.postDelayed(this, (25_000L..80_000L).random())
+            }
         }
     }
 
@@ -180,6 +187,7 @@ class FloatingPetService : Service() {
     // ── State resolution ─────────────────────────────────────────────────────
 
     private fun resolveDisplayState(): PetState {
+        if (isDragging) return PetState.REACT_DRAG  // highest: show drag while held
         gestureState?.let { return it }
         activityState?.let { return it }
         // Fatigue state blocks typing/thinking animation (spec priority: fatigue > server poll)
@@ -214,9 +222,12 @@ class FloatingPetService : Service() {
         }
         if (fatigueState != oldFatigueState) applyDisplayState()
 
-        mainHandler.removeCallbacks(yawnRunnable)
-        if (currentFatigue >= FATIGUE_YAWN && fatigueState == null) {
-            mainHandler.postDelayed(yawnRunnable, (30_000L..90_000L).random())
+        // Start yawn cycle if newly hitting threshold; the runnable reschedules itself
+        if (currentFatigue >= FATIGUE_YAWN) {
+            mainHandler.removeCallbacks(yawnRunnable)
+            mainHandler.postDelayed(yawnRunnable, (15_000L..45_000L).random())
+        } else {
+            mainHandler.removeCallbacks(yawnRunnable)
         }
     }
 
@@ -227,9 +238,51 @@ class FloatingPetService : Service() {
         bubbleView.text = text
         bubbleView.visibility = View.VISIBLE
         mainHandler.postDelayed(bubbleHideRunnable, 10_000)
+        // Spec: bubble triggers same animation as double-tap emotional state
+        val bubblePick = when {
+            currentFatigue >= FATIGUE_YAWN ->
+                listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
+            lastTopDrive == "attachment" || lastTopDrive == "libido" ->
+                listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
+            lastTopDrive == "curiosity" || lastTopDrive == "social" ->
+                listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
+            else ->
+                listOf(PetState.HAPPY, PetState.IDLE_LOOK, PetState.NOTIFICATION).random()
+        }
+        setGesture(bubblePick, 2500)
     }
 
     private fun hideBubble() { bubbleView.visibility = View.GONE }
+
+    // Walk to a random on-screen position using crabwalk animation
+    private fun crabwalkToRandom() {
+        if (isWalking) return
+        isWalking = true
+        val dm = resources.displayMetrics
+        val petPx = (PET_SIZE_DP * dm.density).toInt()
+        val margin = (16 * dm.density).toInt()
+        val maxX = (dm.widthPixels - petPx - margin).coerceAtLeast(margin)
+        val targetX = (margin..maxX).random()
+        val targetY = ((80 * dm.density).toInt()..(400 * dm.density).toInt()).random()
+            .coerceAtMost(dm.heightPixels - petPx - margin)
+        loadGif(PetState.CRABWALK)
+        val startX = params!!.x; val startY = params!!.y
+        val anim = ValueAnimator.ofFloat(0f, 1f)
+        anim.duration = 1400
+        anim.addUpdateListener { va ->
+            val t = va.animatedFraction
+            params!!.x = (startX + (targetX - startX) * t).toInt()
+            params!!.y = (startY + (targetY - startY) * t).toInt()
+            try { windowManager.updateViewLayout(floatView, params) } catch (_: Exception) {}
+        }
+        anim.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                isWalking = false
+                applyDisplayState()
+            }
+        })
+        anim.start()
+    }
 
     // ── Idle Random Animations ───────────────────────────────────────────────
 
@@ -259,6 +312,7 @@ class FloatingPetService : Service() {
                     initialX = params!!.x; initialY = params!!.y
                     initialTouchX = event.rawX; initialTouchY = event.rawY
                     downLocalX = event.x; downLocalY = event.y
+                    isDragging = false
                     velocityTracker?.clear()
                     velocityTracker = VelocityTracker.obtain()
                     velocityTracker?.addMovement(event)
@@ -282,6 +336,12 @@ class FloatingPetService : Service() {
                     velocityTracker?.addMovement(event)
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
+                    // Enter drag mode once finger moves >20px — show react-drag
+                    if (!isDragging && (Math.abs(dx) > 20 || Math.abs(dy) > 20) && !isWalking) {
+                        isDragging = true
+                        currentGifState = null
+                        applyDisplayState()
+                    }
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
                         // START gravity: rightward drag increases x
                         params!!.x = initialX + dx
@@ -329,6 +389,11 @@ class FloatingPetService : Service() {
                     val vx = velocityTracker?.xVelocity ?: 0f
                     val vy = velocityTracker?.yVelocity ?: 0f
                     velocityTracker?.recycle(); velocityTracker = null
+
+                    // End drag mode — restore proper animation
+                    val wasDragging = isDragging
+                    isDragging = false
+                    if (wasDragging) applyDisplayState()
 
                     val dx = Math.abs(event.rawX - initialTouchX)
                     val dy = Math.abs(event.rawY - initialTouchY)
@@ -455,8 +520,8 @@ class FloatingPetService : Service() {
     private fun handleTap() {
         if (isWalking) return
 
-        // Tap during deep sleep only: brief wake. Doze state still allows normal taps.
-        if (fatigueState == PetState.COLLAPSE_SLEEP) {
+        // Tap during any sleep state → brief wake, then return to sleep automatically
+        if (fatigueState != null) {
             setGesture(PetState.WAKE, 1500)
             return
         }
@@ -473,18 +538,25 @@ class FloatingPetService : Service() {
     private fun resolveTap(count: Int) {
         when (count) {
             1 -> {
-                val options = listOf(
-                    PetState.REACT_ANNOYED, PetState.REACT_DOUBLE_JUMP,
-                    PetState.REACT_LEFT, PetState.REACT_RIGHT,
-                    PetState.IDLE_LOOK, PetState.HAPPY
-                )
-                setGesture(options.random(), 2500)
+                // 20% chance: crabwalk to a random position
+                if (Math.random() < 0.20 && !isWalking) {
+                    crabwalkToRandom()
+                } else {
+                    val options = listOf(
+                        PetState.REACT_ANNOYED, PetState.REACT_DOUBLE_JUMP,
+                        PetState.REACT_LEFT, PetState.REACT_RIGHT, PetState.IDLE_LOOK
+                    )
+                    setGesture(options.random(), 2500)
+                }
             }
             2 -> {
-                val pick = when (lastTopDrive) {
-                    "attachment", "libido" ->
+                // Spec: fatigue always dominates in pet (even over libido, unlike Christopher's system)
+                val pick = when {
+                    currentFatigue >= FATIGUE_YAWN ->
+                        listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
+                    lastTopDrive == "attachment" || lastTopDrive == "libido" ->
                         listOf(PetState.AEGYO_SHY, PetState.HAPPY, PetState.REACT_DRAG).random()
-                    "curiosity", "social" ->
+                    lastTopDrive == "curiosity" || lastTopDrive == "social" ->
                         listOf(PetState.NOTIFICATION, PetState.REACT_ANNOYED, PetState.REACT_DOUBLE).random()
                     else ->
                         listOf(PetState.DIZZY, PetState.IDLE_YAWN, PetState.COFFEE_HAND, PetState.SWEEPING, PetState.IDLE_DOZE).random()
