@@ -26,7 +26,7 @@ class StatePoller(
 ) {
     companion object {
         private const val BASE_URL = "https://christopherkristen.xyz/api"
-        const val POLL_INTERVAL_MS = 8000L
+        const val POLL_INTERVAL_MS = 3000L
         private val PET_TOKEN: String by lazy {
             val md5 = MessageDigest.getInstance("MD5").digest("christopherkristen_thinking".toByteArray())
             "ck_pet_" + md5.joinToString("") { "%02x".format(it) }
