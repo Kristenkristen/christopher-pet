@@ -182,6 +182,32 @@ class FloatingPetService : Service() {
         windowManager.addView(floatView, params)
         loadGif(PetState.IDLE)
         setupTouchListener()
+        setupTouchableRegion()
+    }
+
+    // Tell the OS that only the center 60% of the window receives touches.
+    // Touches outside this region pass through to the app below.
+    // Uses ViewTreeObserver.InternalInsetsInfo which handles this at the OS level
+    // (returning false from the touch listener alone is not enough for TYPE_APPLICATION_OVERLAY).
+    private fun setupTouchableRegion() {
+        floatView.viewTreeObserver.addOnComputeInternalInsetsListener { info ->
+            val w = floatView.width
+            val h = floatView.height
+            if (w <= 0 || h <= 0) return@addOnComputeInternalInsetsListener
+            val margin = (w * 0.20f).toInt()
+            info.touchableRegion.set(margin, margin, w - margin, h - margin)
+            // TOUCHABLE_INSETS_REGION = 3 — hidden constant, accessed via reflection
+            try {
+                info.javaClass.getMethod("setTouchableInsets", Int::class.java)
+                    .invoke(info, 3)
+            } catch (_: Exception) {
+                try {
+                    info.javaClass.getDeclaredField("mTouchableInsets")
+                        .apply { isAccessible = true }
+                        .setInt(info, 3)
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     // ── State resolution ─────────────────────────────────────────────────────
