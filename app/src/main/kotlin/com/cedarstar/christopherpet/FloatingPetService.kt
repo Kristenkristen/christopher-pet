@@ -201,6 +201,7 @@ class FloatingPetService : Service() {
     private fun setGesture(state: PetState, durationMs: Long) {
         mainHandler.removeCallbacks(gestureResetRunnable)
         gestureState = state
+        currentGifState = null  // force reload even if transitioning to the same state
         applyDisplayState()
         mainHandler.postDelayed(gestureResetRunnable, durationMs)
     }
@@ -266,6 +267,16 @@ class FloatingPetService : Service() {
                     shakeLastX = event.rawX; shakeLastY = event.rawY
                     shakeDir = 0; shakeReversals = 0
                     shakeStartTime = System.currentTimeMillis()
+                    // Immediate tactile feedback — quick scale pulse so she knows the touch landed
+                    if (!isWalking) {
+                        val pulse = android.animation.ValueAnimator.ofFloat(1f, 0.87f, 1f)
+                        pulse.duration = 110
+                        pulse.addUpdateListener { a ->
+                            val s = a.animatedValue as Float
+                            floatView.scaleX = s; floatView.scaleY = s
+                        }
+                        pulse.start()
+                    }
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -323,8 +334,9 @@ class FloatingPetService : Service() {
                     val dx = Math.abs(event.rawX - initialTouchX)
                     val dy = Math.abs(event.rawY - initialTouchY)
                     val speed = Math.sqrt((vx * vx + vy * vy).toDouble()).toFloat()
+                    val tapSlopPx = (20 * resources.displayMetrics.density)
 
-                    if (dx < 30 && dy < 30 && isTouchInHitArea(downLocalX, downLocalY)) {
+                    if (dx < tapSlopPx && dy < tapSlopPx && isTouchInHitArea(downLocalX, downLocalY)) {
                         handleTap()
                     } else if (speed >= FLING_MIN_VELOCITY && !isWalking) {
                         handleFling(vx, vy)
@@ -451,12 +463,12 @@ class FloatingPetService : Service() {
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastTapTime < 700) tapCount++ else tapCount = 1
+        if (now - lastTapTime < 400) tapCount++ else tapCount = 1
         lastTapTime = now
 
         // Cancel any pending tap resolution and reschedule — only the LAST tap fires
         mainHandler.removeCallbacks(tapResolutionRunnable)
-        mainHandler.postDelayed(tapResolutionRunnable, 600)
+        mainHandler.postDelayed(tapResolutionRunnable, 300)
     }
 
     private fun resolveTap(count: Int) {
