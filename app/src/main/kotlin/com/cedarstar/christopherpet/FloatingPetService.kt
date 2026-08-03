@@ -597,7 +597,16 @@ class FloatingPetService : Service() {
     }
 
     // Window is exactly 140×140dp — same as the pet. Entire window is the hit area.
-    private fun isTouchInHitArea(localX: Float, localY: Float): Boolean = true
+    // Spec: crab body ≈ center 1/3 of animation; transparent edges pass through to app below.
+    // We use center 60%×60% (≈ 36% area) so the hit zone is comfortably tappable.
+    private fun isTouchInHitArea(localX: Float, localY: Float): Boolean {
+        val w = floatView.width.toFloat()
+        val h = floatView.height.toFloat()
+        if (w <= 0f || h <= 0f) return true
+        val margin = 0.20f  // 20% transparent margin on each side
+        return localX >= w * margin && localX <= w * (1f - margin) &&
+               localY >= h * margin && localY <= h * (1f - margin)
+    }
 
     // ── GIF Loading ───────────────────────────────────────────────────────────
 
